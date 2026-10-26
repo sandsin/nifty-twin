@@ -48,12 +48,38 @@ def test_same_clock_uses_price_at_915():
     assert abs(p.values.iloc[0] - (s[ts("10:30")] / base - 1) * 100) < 1e-9
 
 
-def test_align_no_forward_fill():
+def test_own_open_skips_lunch():
     nifty = session_path(walk(minutes("09:15", "12:00"), 1), DAY, ELAPSED).values
+    other = drop_lunch(walk(minutes("07:00", "12:00"), 2), "09:30", "10:30")  # Hang Seng-style lunch
+    p = session_path(other, DAY, ELAPSED, OWN_OPEN)
+    assert list(p.values.index) == list(range(ELAPSED + 1))  # runs as long as Nifty, no gap
+    assert p.clock()[149] == ts("09:29") and p.clock()[150] == ts("10:30")
+    assert p.clock()[-1] == ts("10:45")
+    assert len(align(nifty, p.values)) == ELAPSED + 1
+
+
+def test_same_clock_no_forward_fill():
+    nifty = session_path(walk(minutes("09:15", "12:00"), 1), DAY, ELAPSED, SAME_CLOCK).values
     other = drop_lunch(walk(minutes("07:00", "12:00"), 2), "09:30", "10:30")
-    a = align(nifty, session_path(other, DAY, ELAPSED).values)
-    assert not a.index.isin(range(151, 210)).any()  # Hang Seng-style lunch at +2:30..+3:30
+    a = align(nifty, session_path(other, DAY, ELAPSED, SAME_CLOCK).values)
+    assert not a.index.isin(range(15, 75)).any()  # 9:30..10:29 is lunch
     assert not a.isna().any().any()
+
+
+def test_flat_padded_lunch_is_a_break():
+    s = walk(minutes("07:00", "12:00"), 6)
+    lunch = (s.index >= ts("09:00")) & (s.index < ts("10:30"))
+    s[lunch] = s[ts("08:59")]  # Yahoo-style flat bars through lunch
+    p = session_path(s, DAY, ELAPSED, OWN_OPEN)
+    assert p.clock()[119] == ts("08:59") and p.clock()[120] == ts("10:30")
+
+
+def test_short_gaps_stay_missing():
+    s = walk(minutes("07:00", "12:00"), 5)
+    s = s.drop(s.index[30:35])  # five missing bars, not a session break
+    p = session_path(s, DAY, ELAPSED, OWN_OPEN)
+    assert not p.values.index.isin(range(30, 35)).any()
+    assert p.values.index[-1] == ELAPSED
 
 
 def test_returns_skip_gaps():

@@ -74,8 +74,8 @@ def path_frame(path: Path) -> tuple[pd.Series, list[str]]:
         return v, []
     grid = range(0, int(v.index[-1]) + 1)
     full = v.reindex(grid)
-    clock = [(path.anchor + pd.Timedelta(minutes=m)).strftime("%H:%M") for m in grid]
-    return full, clock
+    clock = pd.Series(path.clock().strftime("%H:%M"), index=v.index).reindex(grid).fillna("")
+    return full, clock.tolist()
 
 
 def chart(nifty: Path, other: Path, other_name: str) -> go.Figure:
@@ -98,7 +98,7 @@ def chart(nifty: Path, other: Path, other_name: str) -> go.Figure:
                            text=f"{name} {valid.iloc[-1]:+.2f}%", showarrow=False,
                            xanchor="left", xshift=6, font=dict(size=12))
     fig.add_hline(y=0, line_width=1, line_color="rgba(128,128,128,0.5)")
-    x_title = "Time since each index's open (h:mm)" if mode == OWN_OPEN else "Time since 9:15 IST (h:mm)"
+    x_title = "Trading time since each index's open (h:mm)" if mode == OWN_OPEN else "Time since 9:15 IST (h:mm)"
     fig.update_layout(
         height=420, margin=dict(l=10, r=140, t=10, b=10), hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
@@ -208,11 +208,13 @@ def dashboard() -> None:
     other_path = session_path(others[other_name], sel_day, elapsed, mode)
     st.plotly_chart(chart(nifty_path, other_path, other_name), use_container_width=True)
     if mode == OWN_OPEN and other_path.anchor is not None:
-        o_end = other_path.anchor + pd.Timedelta(minutes=elapsed)
         st.caption(f"Nifty 9:15 → {end:%H:%M} IST vs {other_name} "
-                   f"{other_path.anchor:%H:%M} → {o_end:%H:%M} IST, both from their own open. ")
-    st.caption("Lines break where an index was not trading (lunch breaks, closed markets). "
-               "Nothing is forward-filled.")
+                   f"{other_path.anchor:%H:%M} → {other_path.clock()[-1]:%H:%M} IST, both from their "
+                   "own open. Time is trading time: lunch breaks are skipped so both lines run "
+                   "side by side. Hover to see each bar's IST time.")
+    else:
+        st.caption("Lines break where an index was not trading (lunch breaks, closed markets). "
+                   "Nothing is forward-filled.")
 
     # ---------- Tables ----------
     cols = {

@@ -44,6 +44,8 @@ WEIGHTS = {
 CLOSENESS_SCALE = 0.5
 MIN_POINTS = 5
 MIN_RETURNS = 3
+# A gap in bars longer than this (minutes) is a session break, e.g. a lunch break.
+BREAK_GAP = 15
 
 
 def nifty_open(day: date) -> pd.Timestamp:
@@ -56,25 +58,45 @@ def day_bars(series: pd.Series, day: date) -> pd.Series:
     if s.empty:
         return s
     start = pd.Timestamp(day).tz_localize(IST)
-    return s[(s.index >= start) & (s.index < start + pd.Timedelta(days=1))]
+    s = s[(s.index >= start) & (s.index < start + pd.Timedelta(days=1))]
+    # Yahoo pads some lunch breaks (e.g. Shenzhen) with flat bars; a price frozen for longer
+    # than BREAK_GAP is a break, so keep its first bar and drop the padding.
+    run = (s.diff() != 0).cumsum()
+    run_len = run.map(run.value_counts())
+    padding = (run_len > BREAK_GAP) & run.duplicated()
+    return s[~padding]
 
 
 @dataclass
 class Path:
-    """Cumulative % change indexed by whole minutes since `anchor`."""
+    """Cumulative % change indexed by whole minutes since `anchor`, with each bar's IST time."""
     values: pd.Series
     anchor: pd.Timestamp | None
+    times: pd.DatetimeIndex | None = None
 
     def clock(self) -> pd.DatetimeIndex:
-        return self.anchor + pd.to_timedelta(self.values.index, unit="min")
+        return self.times
+
+
+def trading_minutes(index: pd.DatetimeIndex, anchor: pd.Timestamp) -> np.ndarray:
+    """Minutes since `anchor` with session breaks (gaps over BREAK_GAP) taken out.
+
+    Shorter gaps are missing bars and still count, so they stay missing rather than filled.
+    """
+    clock = ((index - anchor) / pd.Timedelta(minutes=1)).to_numpy()
+    gaps = np.diff(clock, prepend=clock[0])
+    breaks = np.where(gaps > BREAK_GAP, gaps - 1, 0)
+    return (clock - np.cumsum(breaks)).astype(int)
 
 
 def session_path(series: pd.Series, day: date, elapsed: int, mode: str = OWN_OPEN) -> Path:
     """The index's path over the first `elapsed` minutes after its anchor on `day`.
 
-    OWN_OPEN: anchor and base are the index's first bar of the day (its own open).
-    SAME_CLOCK: anchor is 9:15 IST; the base is the last bar at or before 9:15 that day
-    (an index already trading or on lunch), else the first bar after it.
+    OWN_OPEN: anchor and base are the index's first bar of the day (its own open), and
+    minutes are trading minutes, so lunch breaks are skipped and every path runs as long
+    as Nifty's.
+    SAME_CLOCK: anchor is 9:15 IST and minutes are clock minutes; the base is the last bar
+    at or before 9:15 that day (an index already trading or on lunch), else the first bar after.
     """
     bars = day_bars(series, day)
     empty = Path(pd.Series(dtype=float), None)
@@ -83,19 +105,21 @@ def session_path(series: pd.Series, day: date, elapsed: int, mode: str = OWN_OPE
     if mode == OWN_OPEN:
         anchor = bars.index[0]
         base = bars.iloc[0]
+        mins = trading_minutes(bars.index, anchor)
     else:
         anchor = nifty_open(day)
         before = bars[bars.index <= anchor]
-        after = bars[bars.index >= anchor]
-        if after.empty:
+        if bars[bars.index >= anchor].empty:
             return empty
-        base = before.iloc[-1] if not before.empty else after.iloc[0]
-    window = bars[(bars.index >= anchor) & (bars.index <= anchor + pd.Timedelta(minutes=elapsed))]
-    if window.empty or base == 0 or not np.isfinite(base):
+        base = before.iloc[-1] if not before.empty else bars[bars.index >= anchor].iloc[0]
+        mins = ((bars.index - anchor) / pd.Timedelta(minutes=1)).to_numpy().astype(int)
+    keep = (mins >= 0) & (mins <= elapsed)
+    if not keep.any() or base == 0 or not np.isfinite(base):
         return empty
-    mins = ((window.index - anchor) / pd.Timedelta(minutes=1)).astype(int)
-    values = pd.Series((window.values / base - 1.0) * 100.0, index=mins)
-    return Path(values[~values.index.duplicated(keep="last")], anchor)
+    window = bars[keep]
+    values = pd.Series((window.values / base - 1.0) * 100.0, index=mins[keep])
+    dup = values.index.duplicated(keep="last")
+    return Path(values[~dup], anchor, window.index[~dup])
 
 
 def align(a: pd.Series, b: pd.Series) -> pd.DataFrame:

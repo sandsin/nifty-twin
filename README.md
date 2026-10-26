@@ -25,7 +25,7 @@ Optional: `python test_similarity.py` to check the scoring logic (should print `
 
 1. Pulls 1-minute closes for Nifty (`^NSEI`) and the selected Asian indices.
 2. Converts everything to IST and turns each index into a cumulative % path, indexed by minutes since an anchor. **Align by** picks the anchor:
-   - **Each index's own open** (default): Nifty's first N minutes after 9:15 IST are compared with each index's first N minutes after its own open, rebased to that first bar. For example, at 11:15 IST (2h in) Hang Seng's 7:00-9:00 IST is compared with Nifty's 9:15-11:15.
+   - **Each index's own open** (default): Nifty's first N trading minutes after 9:15 IST are compared with each index's first N trading minutes after its own open, rebased to that first bar. Lunch breaks are skipped, so the two lines start together and run side by side. For example, at 11:15 IST (2h in) Hang Seng's 7:00-9:00 IST is compared with Nifty's 9:15-11:15.
    - **Same clock time**: both over the same IST minutes from 9:15, with each index rebased to its price at 9:15.
 3. Only minutes where both indices actually traded are compared. Lunch breaks and closed markets are never forward-filled.
 4. Each index gets a score out of 100:
@@ -54,7 +54,7 @@ Nikkei 225, Hang Seng, Shanghai Composite, Shenzhen Component, KOSPI, Taiwan TAI
 
 ## Things to know
 
-- **Lunch breaks (IST)**: Shanghai and Shenzhen pause 9:00-10:30, Hang Seng 9:30-10:30. They show as no data or partial data early in the window.
+- **Lunch breaks (IST)**: Shanghai and Shenzhen pause 9:00-10:30, Hang Seng 9:30-10:30, Nikkei 8:00-9:00. In own-open mode they are skipped. In same-clock mode they show as gaps, or as partial data early in the window. Any gap or frozen price longer than 15 minutes counts as a break (Yahoo pads Shenzhen's lunch with flat bars).
 - **Early noise**: a few minutes after the open the match is unreliable. The app warns until Nifty has about 15 bars.
 - **Data lag**: free Yahoo data can lag a few minutes. The header shows Nifty's last bar time so you can see it.
 - **Not trading advice**: similarity of intraday paths does not predict what Nifty does next.
