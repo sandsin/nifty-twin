@@ -10,7 +10,7 @@ Finds which Asian index's session most resembles Nifty 50's since the 9:15 AM IS
 | `similarity.py` | Alignment to 9:15 IST and scoring logic |
 | `data.py` | 1-minute data loader (Yahoo Finance via `yfinance`) |
 | `test_similarity.py` | Tests on synthetic data |
-| `requirements.txt` | Dependencies (Streamlit 1.37+ needed for auto-update, Plotly for the chart) |
+| `requirements.txt` | Dependencies (Streamlit 1.50+, Plotly for the chart) |
 
 ## Run locally
 

@@ -88,23 +88,23 @@ def chart(nifty: Path, other: Path, other_name: str) -> go.Figure:
         if values.empty:
             continue
         x = EPOCH + pd.to_timedelta(values.index, unit="min")
+        # The latest value rides in the legend rather than an end-of-line label, which
+        # would need a wide right margin that squeezes the plot on a phone.
         fig.add_trace(go.Scatter(
-            x=x, y=values.values, name=name, mode="lines", customdata=clock,
-            line=dict(color=color, width=width), connectgaps=False,
+            x=x, y=values.values, name=f"{name} {values.dropna().iloc[-1]:+.2f}%", mode="lines",
+            customdata=clock, line=dict(color=color, width=width), connectgaps=False,
             hovertemplate="%{y:+.2f}% at %{customdata} IST<extra>" + name + "</extra>",
         ))
-        valid = values.dropna()
-        fig.add_annotation(x=EPOCH + pd.Timedelta(minutes=int(valid.index[-1])), y=valid.iloc[-1],
-                           text=f"{name} {valid.iloc[-1]:+.2f}%", showarrow=False,
-                           xanchor="left", xshift=6, font=dict(size=12))
     fig.add_hline(y=0, line_width=1, line_color="rgba(128,128,128,0.5)")
-    x_title = "Trading time since each index's open (h:mm)" if mode == OWN_OPEN else "Time since 9:15 IST (h:mm)"
+    x_title = "Trading time since open (h:mm)" if mode == OWN_OPEN else "Time since 9:15 IST (h:mm)"
     fig.update_layout(
-        height=420, margin=dict(l=10, r=140, t=10, b=10), hovermode="x unified",
+        height=380, margin=dict(l=10, r=10, t=10, b=10), hovermode="x unified",
+        dragmode=False,  # so a touch drag scrolls the page instead of zooming
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
-        yaxis=dict(title="Change since open (%)", ticksuffix="%", zeroline=False,
+        yaxis=dict(title="Change since open", ticksuffix="%", zeroline=False, fixedrange=True,
                    gridcolor="rgba(128,128,128,0.15)"),
-        xaxis=dict(title=x_title, tickformat="%H:%M", hoverformat="+%H:%M", showgrid=False),
+        xaxis=dict(title=x_title, tickformat="%H:%M", hoverformat="+%H:%M", showgrid=False,
+                   fixedrange=True),
     )
     return fig
 
@@ -112,11 +112,11 @@ def chart(nifty: Path, other: Path, other_name: str) -> go.Figure:
 def results_table(results) -> pd.DataFrame:
     rows = []
     for i, r in enumerate(results, start=1):
-        row = {"Rank": i, "Index": r.name}
+        # Score sits next to the name so it shows on a phone without scrolling sideways.
+        row = {"Rank": i, "Index": r.name, "Score": r.score}
         if mode == OWN_OPEN:
             row["Opens (IST)"] = r.anchor.strftime("%H:%M") if r.anchor is not None else "—"
         row.update({
-            "Score": r.score,
             "Path corr": r.path_corr,
             "Return corr": r.return_corr,
             "Direction match": r.direction * 100,
@@ -206,18 +206,20 @@ def dashboard() -> None:
                           key="compare")
     other_name = (ranked[0].name if ranked else partial[0].name) if choice == AUTO else choice
     other_path = session_path(others[other_name], sel_day, elapsed, mode)
-    st.plotly_chart(chart(nifty_path, other_path, other_name), use_container_width=True)
+    st.plotly_chart(chart(nifty_path, other_path, other_name), width="stretch",
+                    config={"displayModeBar": False})
     if mode == OWN_OPEN and other_path.anchor is not None:
         st.caption(f"Nifty 9:15 → {end:%H:%M} IST vs {other_name} "
                    f"{other_path.anchor:%H:%M} → {other_path.clock()[-1]:%H:%M} IST, both from their "
                    "own open. Time is trading time: lunch breaks are skipped so both lines run "
-                   "side by side. Hover to see each bar's IST time.")
+                   "side by side. Tap or hover to see each bar's IST time.")
     else:
         st.caption("Lines break where an index was not trading (lunch breaks, closed markets). "
                    "Nothing is forward-filled.")
 
     # ---------- Tables ----------
     cols = {
+        "Index": st.column_config.TextColumn("Index", pinned=True),
         "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.0f"),
         "Path corr": st.column_config.NumberColumn(format="%.2f"),
         "Return corr": st.column_config.NumberColumn(format="%.2f"),
@@ -227,7 +229,7 @@ def dashboard() -> None:
     }
     st.subheader("Ranking")
     if ranked:
-        st.dataframe(results_table(ranked), hide_index=True, use_container_width=True,
+        st.dataframe(results_table(ranked), hide_index=True, width="stretch",
                      column_config=cols)
     else:
         st.info(f"No index meets the {min_cov:.0%} coverage minimum yet.")
@@ -235,7 +237,7 @@ def dashboard() -> None:
     if partial:
         st.subheader("Partial data (not ranked)")
         st.dataframe(results_table(partial).drop(columns="Rank"), hide_index=True,
-                     use_container_width=True, column_config=cols)
+                     width="stretch", column_config=cols)
     if missing:
         st.caption("No data in this window: " + ", ".join(r.name for r in missing))
 
