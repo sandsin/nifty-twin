@@ -12,7 +12,7 @@ as much as Nifty does.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time
 
 import numpy as np
@@ -226,6 +226,7 @@ class Score:
     points: int = 0
     anchor: pd.Timestamp | None = None
     last_bar: pd.Timestamp | None = None
+    components: dict = field(default_factory=dict)  # each WEIGHTS key -> 0-1, as scored
 
 
 def score_pair(aligned: pd.DataFrame, interval: int, nifty_gap: float = float("nan"),
@@ -264,6 +265,7 @@ def score_pair(aligned: pd.DataFrame, interval: int, nifty_gap: float = float("n
         "gap_diff": gap_diff,
         "shape": shape,
         "direction": direction,
+        "components": parts,
     }
 
 

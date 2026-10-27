@@ -11,20 +11,32 @@ import anthropic
 import ai_analysis
 
 NIFTY = {"gap": -0.34, "gap_points": -77, "since_open": 0.35, "vs_prev": 0.01, "last_bar": "10:19"}
-ROW = {"name": "Hang Seng", "status": "ranked", "score": 29.4, "gap": 0.43, "gap_diff": 0.77,
-       "since_open": -0.6, "vs_prev": -0.17, "opens": "07:00", "coverage": 1.0, "level_rmse": 0.37,
-       "move_match": 0.15, "shape": -0.88, "direction": 0.4}
+FOCUS = {"name": "Hang Seng", "status": "ranked", "rank": 5, "ranked": 9, "score": 29.4,
+         "level": 0.48, "move_match": 0.15, "gap_match": "0.05", "direction": 0.4,
+         "shape": -0.88, "level_rmse": 0.37, "opens": "07:00", "compared_to": "09:28",
+         "coverage": 1.0, "gap": 0.43, "gap_points": 100, "gap_diff": 0.77,
+         "since_open": -0.6, "vs_prev": -0.17}
+RANKING = [{"name": "ASX 200", "status": "ranked", "score": 38.0},
+           {"name": "Hang Seng", "status": "ranked", "score": 29.4},
+           {"name": "KOSPI", "status": "no data", "score": float("nan")}]
 
 
 def test_build_context():
     text = ai_analysis.build_context(
         day="Tue 27 Oct 2026", mode="Each index's own open", window="Nifty 9:15 → 10:19 IST",
-        nifty=NIFTY, results=[ROW, {"name": "KOSPI", "status": "no data"}],
+        nifty=NIFTY, focus=FOCUS, ranking=RANKING,
         paths={"Nifty 50": [(0, "09:15", -0.34), (15, "09:30", -0.1)]})
     assert "opening gap -0.34% (-77 pts)" in text
-    assert "Hang Seng [ranked] score 29" in text and "since open -0.60%" in text
-    assert "KOSPI: no data" in text
+    assert "Selected index: Hang Seng" in text and "rank 5 of 9 ranked" in text
+    assert "level closeness 0.48" in text and "opening gap +0.43% (+100 pts), +0.77 pp vs Nifty's" in text
+    assert "since open -0.60%" in text
+    assert "- ASX 200 [ranked] 38" in text and "- KOSPI: no data" in text
+    assert "- Hang Seng [" not in text  # the selected index isn't repeated in the list
     assert "0m@09:15 -0.34%, 15m@09:30 -0.10%" in text
+    unranked = ai_analysis.build_context(day="d", mode="m", window="w", nifty=NIFTY,
+                                         focus=dict(FOCUS, rank=None, status="partial"),
+                                         ranking=RANKING, paths={})
+    assert "not ranked (partial" in unranked
 
 
 class FakeStream:
@@ -106,26 +118,28 @@ def test_chat_prompt():
     text = ai_analysis.chat_prompt("CTX", "Why ASX?")
     assert text.startswith("<instructions>\n") and ai_analysis.SYSTEM in text
     assert "<briefing>\nCTX\n</briefing>" in text and text.endswith("Question: Why ASX?")
-    assert ai_analysis.chat_prompt("CTX").endswith("Give your analysis of today's match.")
+    assert ai_analysis.chat_prompt("CTX").endswith("Analyse how the selected index compares with Nifty 50 today.")
 
 
 def test_claude_ai_url():
     from urllib.parse import parse_qs, urlparse
     ctx = ai_analysis.build_context(
-        day="Tue", mode="own open", window="w", nifty=NIFTY, results=[ROW],
+        day="Tue", mode="own open", window="w", nifty=NIFTY, focus=FOCUS, ranking=RANKING,
         paths={"Nifty 50": [(0, "09:15", -0.34)]})
     url = ai_analysis.claude_ai_url(ctx, "Why ASX?")
     assert url.startswith("https://claude.ai/new?q=")
     text = parse_qs(urlparse(url).query)["q"][0]  # round-trips exactly
     assert text.startswith(ai_analysis.SHORT_SYSTEM) and ctx in text and text.endswith("Why ASX?")
-    # A briefing too long for a URL gets its paths, then ranking rows, dropped.
-    many = [dict(ROW, name=f"Index {i}") for i in range(40)]
+    # A briefing too long for a URL gets its paths, then other-index rows, dropped,
+    # but always keeps the selected index.
+    many = [{"name": f"Index {i}", "status": "ranked", "score": 10.0} for i in range(300)]
     long_paths = {f"P{i}": [(m, "10:00", 0.1) for m in range(0, 300, 15)] for i in range(10)}
-    big = ai_analysis.build_context(day="Tue", mode="m", window="w", nifty=NIFTY,
-                                    results=many, paths=long_paths)
+    big = ai_analysis.build_context(day="Tue", mode="m", window="w", nifty=NIFTY, focus=FOCUS,
+                                    ranking=many, paths=long_paths)
     url = ai_analysis.claude_ai_url(big)
     text = parse_qs(urlparse(url).query)["q"][0]
-    assert len(url) <= ai_analysis.URL_LIMIT and "Paths," not in text and "Index 0 " in text
+    assert len(url) <= ai_analysis.URL_LIMIT and "Paths," not in text
+    assert "Selected index: Hang Seng" in text and "Index 0 " in text and "Index 299 " not in text
 
 
 def test_chart_csv_and_where_it_goes():

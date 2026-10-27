@@ -274,22 +274,18 @@ def dashboard() -> None:
         st.caption(f"{base_note}Lines break where an index was not trading (lunch breaks, "
                    "closed markets). Nothing is forward-filled.")
 
-    st.session_state["ai_context_at"] = f"{pd.Timestamp.now(tz=IST):%H:%M:%S}"
-    # Every chart point, for Nifty and every index with data, as the AI's full context.
-    all_paths = {"Nifty 50": nifty_path} | {
-        n: session_path(others[n], sel_day, elapsed, mode, prevs.get(n)) for n in names}
-    st.session_state["ai_chart_csv"] = ai_analysis.chart_csv({
-        n: list(zip(p.values.index.astype(int), p.clock().strftime("%H:%M"),
-                    p.values.to_numpy(), p.since_open.to_numpy()))
-        for n, p in all_paths.items() if not p.values.empty})
-    st.session_state["ai_chart_file"] = f"nifty_twin_{sel_day:%Y-%m-%d}_{end:%H%M}.csv"
-    st.session_state["ai_context"] = ai_briefing(
-        sel_day, end, elapsed, nifty_path, results,
-        {"Nifty 50": nifty_path} | {r.name: session_path(others[r.name], sel_day, elapsed, mode,
-                                                          prevs.get(r.name))
-                                    for r in (ranked + partial)[:3]}
-        | {other_name: other_path},
+    # ---------- AI analysis of the selected pair ----------
+    focus = next(r for r in results if r.name == other_name)
+    pair = {"Nifty 50": nifty_path, other_name: other_path}
+    st.divider()
+    ai_panel(
+        other_name,
+        ai_briefing(sel_day, end, elapsed, nifty_path, focus, ranked, results, pair),
+        ai_analysis.chart_csv({n: chart_points(p) for n, p in pair.items() if not p.values.empty}),
+        f"nifty_twin_{sel_day:%Y-%m-%d}_{end:%H%M}_nifty_vs_"
+        + other_name.lower().replace(" ", "_") + ".csv",
     )
+    st.divider()
 
     # ---------- Tables ----------
     cols = {
@@ -323,8 +319,15 @@ def dashboard() -> None:
     st.caption("Similarity of intraday paths does not predict what Nifty does next. Not trading advice.")
 
 
-def ai_briefing(sel_day, end, elapsed, nifty_path: Path, results, paths: dict[str, Path]) -> str:
-    """The dashboard's current state as text for the AI panel."""
+def chart_points(p: Path) -> list[tuple[int, str, float, float]]:
+    """Every chart point: (minute, IST time, % vs previous close, % since open)."""
+    return list(zip(p.values.index.astype(int), p.clock().strftime("%H:%M"),
+                    p.values.to_numpy(), p.since_open.to_numpy()))
+
+
+def ai_briefing(sel_day, end, elapsed, nifty_path: Path, focus, ranked, results,
+                paths: dict[str, Path]) -> str:
+    """Nifty vs the selected index, as text for the AI."""
     def sampled(p: Path) -> list[tuple[int, str, float]]:
         v = p.values
         if v.empty:
@@ -334,6 +337,8 @@ def ai_briefing(sel_day, end, elapsed, nifty_path: Path, results, paths: dict[st
         return [(int(m), f"{clock[m]:%H:%M}", float(v[m])) for m in dict.fromkeys(keep)]
 
     nv = nifty_path.values
+    parts = focus.components
+    rank_no = next((i for i, r in enumerate(ranked, start=1) if r.name == focus.name), None)
     return ai_analysis.build_context(
         day=f"{sel_day:%a %d %b %Y}",
         mode=MODES[mode],
@@ -346,46 +351,47 @@ def ai_briefing(sel_day, end, elapsed, nifty_path: Path, results, paths: dict[st
             "vs_prev": nv.iloc[-1] if not nv.empty and has_prev(nifty_path) else np.nan,
             "last_bar": f"{nifty_path.clock()[-1]:%H:%M}" if not nv.empty else "n/a",
         },
-        results=[{
-            "name": r.name, "status": r.status, "score": r.score, "gap": r.gap,
-            "gap_diff": r.gap_diff, "since_open": r.since_open, "vs_prev": r.now,
-            "opens": f"{r.anchor:%H:%M}" if r.anchor is not None else "n/a",
-            "coverage": r.coverage, "level_rmse": r.level_rmse, "move_match": r.move_match,
-            "shape": r.shape, "direction": r.direction,
-        } for r in results],
+        focus={
+            "name": focus.name, "status": focus.status, "rank": rank_no, "ranked": len(ranked),
+            "score": focus.score, "level": parts.get("level", np.nan),
+            "move_match": focus.move_match,
+            "gap_match": f"{parts['gap']:.2f}" if "gap" in parts else "n/a (no previous close)",
+            "direction": focus.direction, "shape": focus.shape, "level_rmse": focus.level_rmse,
+            "opens": f"{focus.anchor:%H:%M}" if focus.anchor is not None else "n/a",
+            "compared_to": f"{focus.last_bar:%H:%M}" if focus.last_bar is not None else "n/a",
+            "coverage": focus.coverage, "gap": focus.gap, "gap_points": focus.gap_points,
+            "gap_diff": focus.gap_diff, "since_open": focus.since_open, "vs_prev": focus.now,
+        },
+        ranking=[{"name": r.name, "status": r.status, "score": r.score} for r in results],
         paths={name: sampled(p) for name, p in paths.items() if not p.values.empty},
     )
 
 
-def ai_panel() -> None:
-    """On-demand Claude analysis of what the dashboard currently shows."""
-    st.subheader("AI analysis")
-    context = st.session_state.get("ai_context")
-    if not context:
-        st.caption("The analysis runs once the dashboard has data for this window.")
-        return
+def ai_panel(name: str, context: str, csv: str, file_name: str) -> None:
+    """On-demand Claude analysis of Nifty vs the index selected in the dropdown."""
+    st.subheader(f"AI analysis: Nifty 50 vs {name}")
+    st.caption("Follows the **Compare Nifty with** dropdown. Pick another index to analyse it.")
     question = st.text_input("Ask a question (optional)", key="ai_question",
-                             placeholder="e.g. Why is ASX ranked above Hang Seng?")
+                             placeholder=f"e.g. When did {name} split from Nifty?")
     client = ai_analysis.make_client()
     if client is None:
-        claude_ai_prompt(context, question)
+        claude_ai_prompt(context, question, csv, file_name)
         st.caption("Have an Anthropic API key? Add `ANTHROPIC_API_KEY = \"sk-ant-...\"` to "
                    "`.streamlit/secrets.toml`, or under **Manage app → Settings → Secrets** on "
                    "Streamlit Cloud, to get answers right here instead.")
         return
-    with st.expander("Or use your Claude.ai plan (copy and paste)"):
-        claude_ai_prompt(context, question)
+    with st.expander("Or use your Claude.ai plan"):
+        claude_ai_prompt(context, question, csv, file_name)
     if st.button("Analyze with AI", type="primary"):
         try:
-            with st.spinner("Claude is reading the dashboard…"):
-                stream = ai_analysis.stream_analysis(
-                    client, context, question, st.session_state.get("ai_chart_csv"))
+            with st.spinner(f"Claude is comparing {name} with Nifty…"):
+                stream = ai_analysis.stream_analysis(client, context, question, csv)
                 first = next(stream, "")  # hold the spinner until the first words arrive
             answer = st.write_stream(_chain(first, stream))
             history = st.session_state.setdefault("ai_history", [])
-            history.insert(0, (f"{pd.Timestamp.now(tz=IST):%H:%M:%S}", question.strip(), answer))
+            history.insert(0, (f"{pd.Timestamp.now(tz=IST):%H:%M:%S}", name, question.strip(),
+                               answer))
             del history[5:]
-            return
         except anthropic.AuthenticationError:
             st.error("The Anthropic API key was rejected. Check `ANTHROPIC_API_KEY`.")
         except anthropic.RateLimitError:
@@ -394,38 +400,34 @@ def ai_panel() -> None:
             st.error(f"Anthropic API error {e.status_code}. Try again shortly.")
         except anthropic.APIConnectionError:
             st.error("Couldn't reach the Anthropic API. Check the network and try again.")
-    for when, q, answer in st.session_state.get("ai_history", []):
+    for when, pair_name, q, answer in st.session_state.get("ai_history", []):
         with st.container(border=True):
-            st.caption(f"{when} IST" + (f" · {q}" if q else ""))
+            st.caption(f"{when} IST · Nifty vs {pair_name}" + (f" · {q}" if q else ""))
             st.markdown(answer)
-    st.caption(f"Each click is one {ai_analysis.MODEL} request with the full chart data (about 10-25 US cents). The analysis "
-               "only sees the numbers on this page and is not trading advice.")
+    st.caption(f"Each click is one {ai_analysis.MODEL} request with this pair's full chart data "
+               "(a few US cents). The analysis only sees the numbers on this page and is not "
+               "trading advice.")
 
 
-def claude_ai_prompt(context: str, question: str) -> None:
+def claude_ai_prompt(context: str, question: str, csv: str, file_name: str) -> None:
     """Send the analysis to a Claude.ai chat, so a Pro plan can run it without an API key.
 
     The full chart data is too big for a link, so it goes as a CSV the user attaches."""
-    when = st.session_state.get("ai_context_at", "?")
-    csv = st.session_state.get("ai_chart_csv", "")
-    file_name = st.session_state.get("ai_chart_file", "nifty_twin.csv")
     attachment = file_name if csv else None
     st.markdown("**Analyze with your Claude.ai plan.** No API key needed.\n\n"
-                "1. **Download the chart data**: every minute of every index on the chart.\n"
-                "2. **Ask Claude.ai**: opens a new chat with the instructions, this page's "
+                "1. **Download the chart data**: every minute of both lines on the chart.\n"
+                "2. **Ask Claude.ai**: opens a new chat with the instructions, this pair's "
                 "numbers and your question filled in.\n"
                 "3. **Attach the downloaded file** in that chat (paperclip or drag it in), "
                 "then press Enter.")
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     c1.download_button("1 · Download chart data", csv, file_name=file_name, mime="text/csv",
                        on_click="ignore", width="stretch", disabled=not csv)
     c2.link_button("2 · Ask Claude.ai", ai_analysis.claude_ai_url(context, question, attachment),
                    type="primary", width="stretch")
-    # The panel doesn't auto-refresh, so the numbers are from when it last ran.
-    c3.button("Refresh numbers", width="stretch", help=f"Numbers are from {when} IST")
     rows = max(csv.count("\n") - 1, 0)
-    st.caption(f"Numbers as of {when} IST · chart data: {rows:,} rows "
-               f"({len(csv.encode()) / 1024:,.0f} KB). Type a question above to include it.")
+    st.caption(f"Chart data: {rows:,} rows ({len(csv.encode()) / 1024:,.0f} KB), updated with "
+               "the page. Type a question above to include it.")
     with st.expander("Message not filled in? Copy and paste instead"):
         st.code(ai_analysis.chat_prompt(context, question, attachment), language=None,
                 wrap_lines=True, height=240)
@@ -438,5 +440,3 @@ def _chain(first: str, rest):
 
 
 st.fragment(run_every=refresh if live else None)(dashboard)()
-st.divider()
-st.fragment(ai_panel)()

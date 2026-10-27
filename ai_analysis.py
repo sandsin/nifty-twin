@@ -34,12 +34,18 @@ included), move size match 25% (each interval's move alike in size and sign), op
 match 15%, shape 15% (correlation), direction 10%. Indices below the coverage minimum are \
 "partial" and not ranked.
 
-Chart data, when given, is CSV with one row per index per trading minute: index, minute (trading minutes since that index's own open; in "same clock" mode, minutes since 9:15 IST), ist_time, vs_prev_close_pct, since_open_pct. It is the full data behind the chart; use it to check divergences, turning points and timing in detail, citing IST times.
+The user has picked one index in the dashboard to compare with Nifty (the "selected \
+index"). The briefing covers that pair in detail, plus a short ranking of the others for \
+context. Chart data, when given, is CSV with one row per index per trading minute for the \
+two lines on the chart: index, minute (trading minutes since that index's own open; in \
+"same clock" mode, minutes since 9:15 IST), ist_time, vs_prev_close_pct, since_open_pct.
 
-Your job: read the briefing and explain, for a trader watching Nifty, which index is \
-tracking Nifty most closely and why, what the numbers say about how close the match \
-really is, where the leaders diverge from Nifty, and anything that makes today's read \
-unreliable (early session, low coverage, low scores, stale bars).
+Your job: analyse how the selected index compares with Nifty today, for a trader watching \
+Nifty. Cover the opening gaps; when the two moved together and when and how they diverged \
+(cite IST times for both indices, using the chart data where given); which score \
+components helped or hurt its score and why; how it stands against the top-ranked index; \
+and anything that makes the read unreliable (early session, low coverage, low score, \
+lunch breaks, stale bars).
 
 Rules:
 - Describe moves in % with up/down wording or ▲/▼, not index points. Opening gaps may \
@@ -87,14 +93,17 @@ def _fmt(pct: float) -> str:
     return f"{pct:+.2f}%"
 
 
-def build_context(*, day: str, mode: str, window: str, nifty: dict, results: list[dict],
-                  paths: dict[str, list[tuple[int, str, float]]]) -> str:
-    """Plain-text briefing of the dashboard's current state.
+def build_context(*, day: str, mode: str, window: str, nifty: dict, focus: dict,
+                  ranking: list[dict], paths: dict[str, list[tuple[int, str, float]]]) -> str:
+    """Plain-text briefing on Nifty vs the selected index.
 
-    `nifty` has gap, gap_points, since_open, vs_prev, last_bar. Each result has name, status,
-    score, the score components, gap, since_open, vs_prev, opens, coverage. `paths` maps an
-    index name to (trading minute, IST time, % vs previous close) samples.
+    `nifty` has gap, gap_points, since_open, vs_prev, last_bar. `focus` is the selected
+    index's result: name, status, rank, ranked, score, the score components, gap, gap_points,
+    since_open, vs_prev, opens, compared_to, coverage. `ranking` lists every index's name,
+    status and score. `paths` maps an index name to (trading minute, IST time,
+    % vs previous close) samples.
     """
+    f = focus
     lines = [
         f"Date: {day}",
         f"Alignment mode: {mode}",
@@ -106,20 +115,27 @@ def build_context(*, day: str, mode: str, window: str, nifty: dict, results: lis
         f"  since open {_fmt(nifty['since_open'])}, vs previous close {_fmt(nifty['vs_prev'])}",
         f"  last bar {nifty['last_bar']} IST",
         "",
-        "Ranking (score 0-100; components 0-1 except where noted):",
+        f"Selected index: {f['name']}",
+        f"  rank {f['rank']} of {f['ranked']} ranked" if f["rank"] else
+        f"  not ranked ({f['status']}: coverage below the minimum)",
+        f"  score {f['score']:.0f}/100; components (0-1): level closeness {f['level']:.2f}, "
+        f"move size match {f['move_match']:.2f}, opening gap match {f['gap_match']}, "
+        f"direction {f['direction']:.2f}; shape (correlation) {f['shape']:+.2f}",
+        f"  level gap (RMSE between the lines) {f['level_rmse']:.2f} pp",
+        f"  opens {f['opens']} IST; compared up to {f['compared_to']} IST; "
+        f"coverage {f['coverage']:.0%}",
+        f"  opening gap {_fmt(f['gap'])}"
+        + (f" ({f['gap_points']:+,.0f} pts)" if f["gap"] == f["gap"] else "")
+        + (f", {f['gap_diff']:+.2f} pp vs Nifty's" if f["gap_diff"] == f["gap_diff"] else ""),
+        f"  since open {_fmt(f['since_open'])}, vs previous close {_fmt(f['vs_prev'])}",
+        "",
+        "Other indices (score 0-100):",
     ]
-    for r in results:
-        if r["status"] == "no data":
-            lines.append(f"- {r['name']}: no data in this window")
+    for r in ranking:
+        if r["name"] == f["name"]:
             continue
-        lines.append(
-            f"- {r['name']} [{r['status']}] score {r['score']:.0f} | "
-            f"opens {r['opens']} IST, coverage {r['coverage']:.0%} | "
-            f"gap {_fmt(r['gap'])} (vs Nifty {_fmt(r['gap_diff'])} pp), "
-            f"since open {_fmt(r['since_open'])}, vs prev close {_fmt(r['vs_prev'])} | "
-            f"level gap {r['level_rmse']:.2f} pp, move match {r['move_match']:.2f}, "
-            f"shape {r['shape']:+.2f}, direction {r['direction']:.0%}"
-        )
+        lines.append(f"- {r['name']}: no data" if r["status"] == "no data"
+                     else f"- {r['name']} [{r['status']}] {r['score']:.0f}")
     if paths:
         lines += ["", f"Paths, % vs previous close, every {SAMPLE_EVERY} trading minutes "
                       "(minute from own open @ IST time):"]
@@ -149,7 +165,8 @@ def _request(context: str, question: str | None, chart_data: str | None = None,
         parts.append(f"I have attached {attachment}: the full minute-by-minute chart data as CSV "
                      f"({CHART_COLUMNS}). Use it as well as the briefing; if no file is "
                      "attached, work from the briefing alone.")
-    parts.append(f"Question: {ask}" if ask else "Give your analysis of today's match.")
+    parts.append(f"Question: {ask}" if ask
+                 else "Analyse how the selected index compares with Nifty 50 today.")
     return "\n\n".join(parts)
 
 
@@ -161,16 +178,17 @@ def chat_prompt(context: str, question: str | None = None, attachment: str | Non
 
 
 # Shorter instructions for the Claude.ai link, which has to fit in a URL.
-SHORT_SYSTEM = """You are the analyst for "Nifty Twin", a dashboard finding which Asian index \
-moves most like India's Nifty 50 today. Paths are % from each index's previous close \
-(starting at the opening gap), compared from each index's own open. Score 0-100 = level \
-closeness 35%, move size match 25%, opening gap match 15%, shape 15%, direction 10%.
-Using only the briefing: say which index tracks Nifty most closely and why, how close the \
-match really is (under ~40 means no close twin), where the leaders diverge, and what makes \
-the read unreliable. Use % with up/down, not points. Not advice: no trade calls or Nifty \
+SHORT_SYSTEM = """You are the analyst for "Nifty Twin", a dashboard comparing Asian indices \
+with India's Nifty 50 today. Paths are % from each index's previous close (starting at the \
+opening gap), compared from each index's own open. Score 0-100 = level closeness 35%, move \
+size match 25%, opening gap match 15%, shape 15%, direction 10%.
+Analyse the selected index against Nifty using only this data: opening gaps; when they moved \
+together and when they diverged (cite IST times); which score components helped or hurt; \
+how it compares with the top-ranked index (under ~40 means no close twin); and what makes the \
+read unreliable. Use % with up/down, not points. Not advice: no trade calls or Nifty \
 predictions. About 150-250 words: a headline, then short bullets. Answer any question first.
-An attached CSV, if any, has every chart point (one row per index per trading minute); use \
-it for detail and cite IST times."""
+An attached CSV, if any, has every chart point for the two indices (one row per index per \
+trading minute); use it for detail."""
 
 CLAUDE_AI_NEW = "https://claude.ai/new?q="
 URL_LIMIT = 8000  # encoded characters; much longer URLs get rejected by some servers
@@ -181,7 +199,7 @@ def claude_ai_url(context: str, question: str | None = None,
     """Link that opens a Claude.ai chat with the analysis prompt pre-filled.
 
     Uses the short instructions; if that is still too long, drops the sampled paths and
-    then trims the ranking to the top rows.
+    then the lowest rows of the other-indices list.
     """
     def link(ctx: str) -> str:
         text = f"{SHORT_SYSTEM}\n\n{_request(ctx, question, attachment=attachment)}"
@@ -192,11 +210,11 @@ def claude_ai_url(context: str, question: str | None = None,
         context = context.split("\n\nPaths,")[0]
         url = link(context)
     if len(url) > URL_LIMIT:
-        head, _, rows = context.partition("Ranking")
+        head, _, rows = context.partition("Other indices")
         lines = rows.split("\n")
-        while len(url) > URL_LIMIT and len(lines) > 2:
+        while len(url) > URL_LIMIT and len(lines) > 1:
             lines.pop()
-            url = link(head + "Ranking" + "\n".join(lines))
+            url = link(head + "Other indices" + "\n".join(lines))
     return url
 
 
