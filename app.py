@@ -394,19 +394,21 @@ def ai_panel() -> None:
 
 
 def claude_ai_prompt(context: str, question: str) -> None:
-    """Paste-ready prompt for a Claude.ai chat, so a Pro plan can run the analysis."""
-    st.markdown("**Analyze with your Claude.ai plan.** No API key needed.\n\n"
-                "1. Copy the prompt below with the copy icon at its top right.\n"
-                "2. Open Claude.ai and paste it into a new chat.")
-    st.code(ai_analysis.chat_prompt(context, question), language=None, wrap_lines=True,
-            height=240)
+    """Send the analysis to a Claude.ai chat, so a Pro plan can run it without an API key."""
+    when = st.session_state.get("ai_context_at", "?")
+    st.markdown("**Analyze with your Claude.ai plan.** No API key needed. The button opens a "
+                "new Claude.ai chat with this page's numbers and your question already filled "
+                "in; press Enter there to send.")
     c1, c2 = st.columns(2)
-    c1.link_button("Open Claude.ai", "https://claude.ai/new", width="stretch")
-    # The panel doesn't auto-refresh, so the numbers above are from when it last ran.
-    c2.button("Refresh numbers", width="stretch",
-              help=f"Prompt numbers are from {st.session_state.get('ai_context_at', '?')} IST")
-    st.caption(f"Numbers as of {st.session_state.get('ai_context_at', '?')} IST. Type a question "
-               "above to include it in the prompt.")
+    c1.link_button("Ask Claude.ai about this", ai_analysis.claude_ai_url(context, question),
+                   type="primary", width="stretch")
+    # The panel doesn't auto-refresh, so the numbers are from when it last ran.
+    c2.button("Refresh numbers", width="stretch", help=f"Numbers are from {when} IST")
+    st.caption(f"Numbers as of {when} IST. Type a question above to include it.")
+    with st.expander("Message not filled in? Copy and paste instead"):
+        st.code(ai_analysis.chat_prompt(context, question), language=None, wrap_lines=True,
+                height=240)
+        st.link_button("Open Claude.ai", "https://claude.ai/new")
 
 
 def _chain(first: str, rest):

@@ -109,6 +109,25 @@ def test_chat_prompt():
     assert ai_analysis.chat_prompt("CTX").endswith("Give your analysis of today's match.")
 
 
+def test_claude_ai_url():
+    from urllib.parse import parse_qs, urlparse
+    ctx = ai_analysis.build_context(
+        day="Tue", mode="own open", window="w", nifty=NIFTY, results=[ROW],
+        paths={"Nifty 50": [(0, "09:15", -0.34)]})
+    url = ai_analysis.claude_ai_url(ctx, "Why ASX?")
+    assert url.startswith("https://claude.ai/new?q=")
+    text = parse_qs(urlparse(url).query)["q"][0]  # round-trips exactly
+    assert text.startswith(ai_analysis.SHORT_SYSTEM) and ctx in text and text.endswith("Why ASX?")
+    # A briefing too long for a URL gets its paths, then ranking rows, dropped.
+    many = [dict(ROW, name=f"Index {i}") for i in range(40)]
+    long_paths = {f"P{i}": [(m, "10:00", 0.1) for m in range(0, 300, 15)] for i in range(10)}
+    big = ai_analysis.build_context(day="Tue", mode="m", window="w", nifty=NIFTY,
+                                    results=many, paths=long_paths)
+    url = ai_analysis.claude_ai_url(big)
+    text = parse_qs(urlparse(url).query)["q"][0]
+    assert len(url) <= ai_analysis.URL_LIMIT and "Paths," not in text and "Index 0 " in text
+
+
 def test_no_credentials_means_no_client():
     import os
     saved = {k: os.environ.pop(k, None) for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}

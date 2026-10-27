@@ -52,7 +52,7 @@ Below the ranking, **Analyze with AI** sends what the page currently shows to Cl
 - The briefing it sends is the numbers on the page: gaps, % moves, score components, and paths sampled every 15 minutes. Nothing else.
 - It is commentary, not trading advice. It is told not to recommend trades or predict Nifty.
 
-**No API key? Use your Claude.ai plan.** The panel shows a ready-to-paste prompt: the same instructions plus the live numbers, with a copy button. Copy it, click **Open Claude.ai**, and paste it into a new chat. A Claude Pro plan does not include API access, so this is the way to use it here. Click **Refresh numbers** for a fresh snapshot.
+**No API key? Use your Claude.ai plan.** **Ask Claude.ai about this** opens a new Claude.ai chat with the analysis prompt already filled in: short instructions, this page's live numbers and your question. Press Enter there to send. A Claude Pro plan doesn't include API access, so this is how to use it here. Click **Refresh numbers** for a fresh snapshot first. The prompt travels in the link (`claude.ai/new?q=...`), which is capped at 8,000 characters; the path samples, then the lowest ranking rows, are dropped if needed. If the message doesn't appear, the expander below the button has the full prompt to copy and paste.
 
 To get answers inside the app instead, add an Anthropic API key (from platform.claude.com; API usage is billed separately from Pro):
 

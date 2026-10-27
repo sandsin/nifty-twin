@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from urllib.parse import quote
 
 import anthropic
 
@@ -133,6 +134,43 @@ def chat_prompt(context: str, question: str | None = None) -> str:
     """One paste-ready message for a Claude.ai chat: the analyst instructions plus the
     briefing, so a Pro plan gives the same kind of answer without an API key."""
     return f"<instructions>\n{SYSTEM}\n</instructions>\n\n{_request(context, question)}"
+
+
+# Shorter instructions for the Claude.ai link, which has to fit in a URL.
+SHORT_SYSTEM = """You are the analyst for "Nifty Twin", a dashboard finding which Asian index \
+moves most like India's Nifty 50 today. Paths are % from each index's previous close \
+(starting at the opening gap), compared from each index's own open. Score 0-100 = level \
+closeness 35%, move size match 25%, opening gap match 15%, shape 15%, direction 10%.
+Using only the briefing: say which index tracks Nifty most closely and why, how close the \
+match really is (under ~40 means no close twin), where the leaders diverge, and what makes \
+the read unreliable. Use % with up/down, not points. Not advice: no trade calls or Nifty \
+predictions. About 150-250 words: a headline, then short bullets. Answer any question first."""
+
+CLAUDE_AI_NEW = "https://claude.ai/new?q="
+URL_LIMIT = 8000  # encoded characters; much longer URLs get rejected by some servers
+
+
+def claude_ai_url(context: str, question: str | None = None) -> str:
+    """Link that opens a Claude.ai chat with the analysis prompt pre-filled.
+
+    Uses the short instructions; if that is still too long, drops the sampled paths and
+    then trims the ranking to the top rows.
+    """
+    def link(ctx: str) -> str:
+        text = f"{SHORT_SYSTEM}\n\n{_request(ctx, question)}"
+        return CLAUDE_AI_NEW + quote(text, safe="")
+
+    url = link(context)
+    if len(url) > URL_LIMIT:
+        context = context.split("\n\nPaths,")[0]
+        url = link(context)
+    if len(url) > URL_LIMIT:
+        head, _, rows = context.partition("Ranking")
+        lines = rows.split("\n")
+        while len(url) > URL_LIMIT and len(lines) > 2:
+            lines.pop()
+            url = link(head + "Ranking" + "\n".join(lines))
+    return url
 
 
 def stream_analysis(client: anthropic.Anthropic, context: str,
