@@ -128,6 +128,7 @@ def test_prev_close_base_and_points():
     assert abs(p.points.iloc[0] - 12) < 1e-9
     assert abs(p.points.iloc[-1] + 58) < 1e-9  # 24942 is -58 pts from the previous close
     assert abs(p.values.iloc[-1] - (24942 / 25000 - 1) * 100) < 1e-9
+    assert abs(p.since_open.iloc[-1] - (24942 / 25012 - 1) * 100) < 1e-9  # gap taken out
 
 
 def test_move_match():

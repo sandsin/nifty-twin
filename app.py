@@ -48,6 +48,14 @@ def fmt_move(pct: float, pts: float) -> str:
     return f"{pct:+.2f}% ({pts:+,.0f} pts)" if np.isfinite(pts) else f"{pct:+.2f}%"
 
 
+def fmt_pct(pct: float) -> str:
+    """Up/down move in %: '▲ 0.32%', '▼ 0.20%', or '—' when unknown."""
+    if not np.isfinite(pct):
+        return "—"
+    arrow = "▲" if pct > 0.005 else "▼" if pct < -0.005 else "■"
+    return f"{arrow} {abs(pct):.2f}%"
+
+
 def has_prev(path: Path) -> bool:
     """Whether the path is measured from a known previous close."""
     return bool(np.isfinite(path.gap))
@@ -87,7 +95,7 @@ with st.sidebar:
 
 def path_frame(path: Path) -> tuple[pd.Series, list[list[str]]]:
     """Path on a full-minute elapsed grid (NaN where not trading, so lines break) plus hover
-    labels per minute: IST time, points from previous close, index level."""
+    labels per minute: IST time, move vs previous close, move since open."""
     v = path.values
     if v.empty:
         return v, []
@@ -95,8 +103,8 @@ def path_frame(path: Path) -> tuple[pd.Series, list[list[str]]]:
     full = v.reindex(grid)
     labels = pd.DataFrame({
         "clock": path.clock().strftime("%H:%M"),
-        "points": [f"{p:+,.0f}" for p in path.points],
-        "level": [f"{x:,.2f}" for x in path.levels],
+        "vs_prev": [fmt_pct(x) for x in v],
+        "since_open": [fmt_pct(x) for x in path.since_open],
     }, index=v.index).reindex(grid).fillna("")
     return full, labels.values.tolist()
 
@@ -113,11 +121,11 @@ def chart(nifty: Path, other: Path, other_name: str) -> go.Figure:
         x = EPOCH + pd.to_timedelta(values.index, unit="min")
         # The latest value rides in the legend rather than an end-of-line label, which
         # would need a wide right margin that squeezes the plot on a phone.
-        latest = fmt_move(path.values.iloc[-1], path.points.iloc[-1] if has_prev(path) else np.nan)
+        latest = fmt_pct(path.values.iloc[-1])
         fig.add_trace(go.Scatter(
             x=x, y=values.values, name=f"{name} {latest}", mode="lines",
             customdata=labels, line=dict(color=color, width=width), connectgaps=False,
-            hovertemplate=("%{y:+.2f}% (%{customdata[1]} pts) · %{customdata[2]} "
+            hovertemplate=("%{customdata[1]} · since open %{customdata[2]} "
                            "at %{customdata[0]} IST<extra>" + name + "</extra>"),
         ))
     fig.add_hline(y=0, line_width=1, line_color="rgba(128,128,128,0.5)")
@@ -142,7 +150,8 @@ def results_table(results) -> pd.DataFrame:
         row = {
             "Rank": i, "Index": r.name, "Score": r.score,
             "Opening gap": fmt_move(r.gap, r.gap_points),
-            "Now": fmt_move(r.now, r.now_points if np.isfinite(r.gap) else np.nan),
+            "Since open": fmt_pct(r.since_open),
+            "Vs prev close": fmt_pct(r.now) if np.isfinite(r.gap) else "—",
             "Level gap (pp)": r.level_rmse,
             "Move size match": r.move_match * 100,
             "Shape": r.shape,
@@ -219,11 +228,11 @@ def dashboard() -> None:
         c1.metric("Closest match", "—")
     if last_bar is not None and has_prev(nifty_path):
         c2.metric("Nifty vs previous close", f"{nv.iloc[-1]:+.2f}%",
-                  f"{nifty_path.points.iloc[-1]:+,.0f} pts · {nifty_path.levels.iloc[-1]:,.2f}")
+                  f"{nifty_path.since_open.iloc[-1]:+.2f}% since open")
         c3.metric("Nifty opening gap", f"{nifty_path.gap:+.2f}%",
                   f"{nifty_path.gap * nifty_path.base / 100:+,.0f} pts")
     else:
-        c2.metric("Nifty since 9:15", f"{nv.iloc[-1]:+.2f}%" if last_bar is not None else "—")
+        c2.metric("Nifty since open", f"{nv.iloc[-1]:+.2f}%" if last_bar is not None else "—")
         c3.metric("Nifty opening gap", "—")
     if last_bar is not None:
         lag = ""
@@ -258,7 +267,7 @@ def dashboard() -> None:
         st.caption(f"Nifty 9:15 → {end:%H:%M} IST vs {other_name} "
                    f"{other_path.anchor:%H:%M} → {other_path.clock()[-1]:%H:%M} IST, both from their "
                    f"own open. {base_note}Time is trading time: lunch breaks are skipped so both "
-                   "lines run side by side. Tap or hover for points, level and IST time.")
+                   "lines run side by side. Tap or hover for % moves and IST time.")
     else:
         st.caption(f"{base_note}Lines break where an index was not trading (lunch breaks, "
                    "closed markets). Nothing is forward-filled.")
@@ -268,7 +277,8 @@ def dashboard() -> None:
         "Index": st.column_config.TextColumn("Index", pinned=True),
         "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.0f"),
         "Opening gap": st.column_config.TextColumn(help="Open vs previous close"),
-        "Now": st.column_config.TextColumn(help="Latest in the window vs previous close"),
+        "Since open": st.column_config.TextColumn(help="Up or down since the index opened, in %"),
+        "Vs prev close": st.column_config.TextColumn(help="Up or down vs the previous close, in %"),
         "Level gap (pp)": st.column_config.NumberColumn(
             format="%.2f", help="Typical distance between the two lines, in percentage points"),
         "Move size match": st.column_config.NumberColumn(

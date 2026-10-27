@@ -24,7 +24,7 @@ Optional: `python test_similarity.py` to check the scoring logic (should print `
 ## How it works
 
 1. Pulls 1-minute closes for Nifty (`^NSEI`) and the selected Asian indices, plus each index's previous official daily close. The last 1-minute bar can miss the closing auction (KOSPI and Nikkei by up to 0.5%), so the daily close is used.
-2. Converts everything to IST and turns each index into a path of % change from its previous close. Each line starts at its opening gap. The header, table and chart hover also show the same moves in index points. **Align by** picks how the minutes line up:
+2. Converts everything to IST and turns each index into a path of % change from its previous close. Each line starts at its opening gap. Moves are shown as % up (▲) or down (▼), both vs the previous close and since the open; only the opening gap is also shown in points. **Align by** picks how the minutes line up:
    - **Each index's own open** (default): Nifty's first N trading minutes after 9:15 IST are compared with each index's first N trading minutes after its own open. Lunch breaks are skipped, so the two lines run side by side. For example, at 11:15 IST (2h in) Hang Seng's 7:00-9:00 IST is compared with Nifty's 9:15-11:15.
    - **Same clock time**: both over the same IST minutes from 9:15.
 3. Only minutes where both indices actually traded are compared. Lunch breaks and closed markets are never forward-filled.

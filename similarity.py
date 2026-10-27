@@ -88,7 +88,7 @@ class Path:
 
     `levels` holds the index's price at each point and `times` the bar's IST time.
     `base` is the previous official close when known (then `gap` is the opening gap in %),
-    else the first bar or the 9:15 price, and `gap` is NaN.
+    else the first bar or the 9:15 price, and `gap` is NaN. `open_level` is the day's first bar.
     """
     values: pd.Series
     anchor: pd.Timestamp | None = None
@@ -96,6 +96,7 @@ class Path:
     levels: pd.Series | None = None
     base: float = float("nan")
     gap: float = float("nan")
+    open_level: float = float("nan")
 
     def clock(self) -> pd.DatetimeIndex:
         return self.times
@@ -103,6 +104,11 @@ class Path:
     @property
     def points(self) -> pd.Series:
         return self.levels - self.base
+
+    @property
+    def since_open(self) -> pd.Series:
+        """% move from the day's open, i.e. the intraday move with the opening gap taken out."""
+        return (self.levels / self.open_level - 1.0) * 100.0
 
 
 EMPTY = Path(pd.Series(dtype=float))
@@ -153,7 +159,8 @@ def session_path(series: pd.Series, day: date, elapsed: int, mode: str = OWN_OPE
     idx = mins[keep][~dup]
     levels = pd.Series(window.values[~dup], index=idx)
     gap = (bars.iloc[0] / base - 1.0) * 100.0 if has_prev else float("nan")
-    return Path((levels / base - 1.0) * 100.0, anchor, window.index[~dup], levels, base, gap)
+    return Path((levels / base - 1.0) * 100.0, anchor, window.index[~dup], levels, base, gap,
+                float(bars.iloc[0]))
 
 
 def align(a: pd.Series, b: pd.Series) -> pd.DataFrame:
@@ -214,7 +221,7 @@ class Score:
     shape: float = float("nan")
     direction: float = float("nan")
     now: float = float("nan")         # latest % from previous close within the window
-    now_points: float = float("nan")
+    since_open: float = float("nan")  # latest % from the day's open
     coverage: float = 0.0
     points: int = 0
     anchor: pd.Timestamp | None = None
@@ -291,7 +298,7 @@ def rank(
         info = dict(
             anchor=path.anchor, last_bar=path.clock()[-1], gap=path.gap,
             gap_points=path.gap * path.base / 100.0, now=path.values.iloc[-1],
-            now_points=path.points.iloc[-1],
+            since_open=path.since_open.iloc[-1],
         )
         aligned = align(npath.values, path.values)
         coverage = len(aligned) / n_nifty
