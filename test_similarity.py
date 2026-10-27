@@ -5,7 +5,7 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
-from similarity import (IST, OWN_OPEN, SAME_CLOCK, align, interval_returns, rank,
+from similarity import (IST, OWN_OPEN, SAME_CLOCK, align, interval_returns, move_match, rank,
                         session_path)
 
 DAY = date(2026, 10, 23)
@@ -119,6 +119,42 @@ def test_ranking_order_and_partial():
     assert by["Short"].status == "partial"
     assert by["Empty"].status == "no data"
     assert all(0 <= r.score <= 100 for r in res if r.status != "no data")
+
+
+def test_prev_close_base_and_points():
+    s = pd.Series(np.linspace(25012, 24942, 166), index=minutes("09:15", "12:00"))
+    p = session_path(s, DAY, ELAPSED, OWN_OPEN, prev_close=25000)
+    assert abs(p.gap - 0.048) < 1e-9          # opened +12 pts
+    assert abs(p.points.iloc[0] - 12) < 1e-9
+    assert abs(p.points.iloc[-1] + 58) < 1e-9  # 24942 is -58 pts from the previous close
+    assert abs(p.values.iloc[-1] - (24942 / 25000 - 1) * 100) < 1e-9
+
+
+def test_move_match():
+    df = pd.DataFrame({"nifty": [-0.27, 0.1], "other": [-0.20, 0.1]})
+    assert 0.85 < move_match(df) < 0.95
+    assert move_match(pd.DataFrame({"nifty": [-0.2], "other": [0.2]})) == 0
+
+
+def test_similar_points_beat_big_gap_same_shape():
+    """The README example: Hang Seng opens +10 pts and falls 50 while Nifty opens +12 and
+    falls 70. KOSPI opens +3% and then moves exactly like Nifty. Hang Seng is closer."""
+    idx = minutes("09:15", "12:00")
+    rng = np.random.default_rng(11)
+    wiggle = np.cumsum(rng.normal(0, 3, len(idx)))
+    nifty = pd.Series(np.linspace(25012, 24942, len(idx)) + wiggle, index=idx)
+    hk_idx = idx - pd.Timedelta(minutes=135)  # opens 7:00 IST
+    hang_seng = pd.Series(np.linspace(26010, 25960, len(idx)) + 0.8 * wiggle
+                          + rng.normal(0, 4, len(idx)), index=hk_idx)
+    kospi = pd.Series(2575 * nifty.values / nifty.iloc[0], index=idx - pd.Timedelta(minutes=225))
+    others = {"Hang Seng": hang_seng, "KOSPI": kospi}
+    res = rank(nifty, others, DAY, ELAPSED, OWN_OPEN, tickers={k: k for k in others},
+               prev_closes={"Hang Seng": 26000, "KOSPI": 2500}, nifty_prev=25000)
+    by = {r.name: r for r in res}
+    assert by["KOSPI"].shape > 0.99  # same shape...
+    assert by["Hang Seng"].score > by["KOSPI"].score + 20, (by["Hang Seng"].score, by["KOSPI"].score)
+    assert abs(by["Hang Seng"].gap_points - 10) < 15  # +10 pts plus the first bar's noise
+    assert abs(by["KOSPI"].gap - 3) < 1e-9
 
 
 if __name__ == "__main__":

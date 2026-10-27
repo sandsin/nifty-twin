@@ -23,20 +23,23 @@ Optional: `python test_similarity.py` to check the scoring logic (should print `
 
 ## How it works
 
-1. Pulls 1-minute closes for Nifty (`^NSEI`) and the selected Asian indices.
-2. Converts everything to IST and turns each index into a cumulative % path, indexed by minutes since an anchor. **Align by** picks the anchor:
-   - **Each index's own open** (default): Nifty's first N trading minutes after 9:15 IST are compared with each index's first N trading minutes after its own open, rebased to that first bar. Lunch breaks are skipped, so the two lines start together and run side by side. For example, at 11:15 IST (2h in) Hang Seng's 7:00-9:00 IST is compared with Nifty's 9:15-11:15.
-   - **Same clock time**: both over the same IST minutes from 9:15, with each index rebased to its price at 9:15.
+1. Pulls 1-minute closes for Nifty (`^NSEI`) and the selected Asian indices, plus each index's previous official daily close. The last 1-minute bar can miss the closing auction (KOSPI and Nikkei by up to 0.5%), so the daily close is used.
+2. Converts everything to IST and turns each index into a path of % change from its previous close. Each line starts at its opening gap. The header, table and chart hover also show the same moves in index points. **Align by** picks how the minutes line up:
+   - **Each index's own open** (default): Nifty's first N trading minutes after 9:15 IST are compared with each index's first N trading minutes after its own open. Lunch breaks are skipped, so the two lines run side by side. For example, at 11:15 IST (2h in) Hang Seng's 7:00-9:00 IST is compared with Nifty's 9:15-11:15.
+   - **Same clock time**: both over the same IST minutes from 9:15.
 3. Only minutes where both indices actually traded are compared. Lunch breaks and closed markets are never forward-filled.
-4. Each index gets a score out of 100:
+4. Each index gets a score out of 100. The score rewards moving by about as much as Nifty, not just in the same shape:
 
 | Component | Weight | Meaning |
 |---|---|---|
-| Path correlation | 35% | Do the cumulative paths have the same shape? |
-| Return correlation | 25% | Do short-interval moves line up? |
-| Direction match | 15% | How often the two move the same way |
-| Closeness | 25% | How small the gap between the paths is (RMSE) |
+| Level closeness | 35% | How close the two lines stay, opening gap included (RMSE in % points) |
+| Move size match | 25% | How alike each interval's move is in size and sign. Nifty -0.27% vs -0.20% is a close match; vs +0.20% is none |
+| Opening gap match | 15% | How alike the two opening gaps are |
+| Shape | 15% | Do the paths have the same shape (correlation)? |
+| Direction | 10% | How often the two move the same way |
 
+   Example: Nifty opens +12 pts and falls 70, and Hang Seng opens +10 and falls 50. They score well above KOSPI opening +3% and then moving exactly like Nifty, because KOSPI's level is far away the whole time. Moves are compared in %, not raw points: 50 points on Nikkei (~40,000) is a smaller move than 50 on Nifty (~25,000).
+   If a previous close is unavailable, paths start from the open and the gap component is left out.
 5. Indices with less than the minimum coverage (default 70%) are listed as "partial data" and not ranked.
 
 ## Indices covered
@@ -49,7 +52,7 @@ Nikkei 225, Hang Seng, Shanghai Composite, Shenzhen Component, KOSPI, Taiwan TAI
 - **Live**: window ends now and the page auto-updates.
 - **Auto-update every**: 10 to 120 seconds. Yahoo publishes 1-minute bars about once a minute, so going below 30 seconds rarely helps.
 - **Trading day / Window end**: replay any of the last ~7 trading days to test how well it would have worked.
-- **Return interval**: minutes per hop for return correlation and direction match.
+- **Move interval**: minutes per hop when comparing the size and direction of moves.
 - **Min data coverage**: how much overlap is required to rank an index.
 
 ## Things to know

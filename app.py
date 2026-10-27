@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime, time
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from data import fetch_closes, trading_days
-from similarity import (CANDIDATES, IST, NIFTY, OWN_OPEN, SAME_CLOCK, WEIGHTS, Path, nifty_open,
-                        rank, session_path)
+from data import fetch_closes, fetch_daily_closes, prev_close, trading_days
+from similarity import (CANDIDATES, IST, LABELS, NIFTY, OWN_OPEN, SAME_CLOCK, WEIGHTS, Path,
+                        nifty_open, rank, session_path)
 
 MARKET_CLOSE = time(15, 30)
 EARLY_BARS = 15
@@ -31,8 +32,25 @@ def load(tickers: tuple[str, ...]) -> dict[str, pd.Series]:
     return fetch_closes(list(tickers))
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def load_daily(tickers: tuple[str, ...]) -> dict[str, pd.Series]:
+    return fetch_daily_closes(list(tickers))
+
+
 def fmt_elapsed(minutes: int) -> str:
     return f"{minutes // 60}h {minutes % 60:02d}m"
+
+
+def fmt_move(pct: float, pts: float) -> str:
+    """'+0.05% (+12 pts)', or '—' when unknown."""
+    if not np.isfinite(pct):
+        return "—"
+    return f"{pct:+.2f}% ({pts:+,.0f} pts)" if np.isfinite(pts) else f"{pct:+.2f}%"
+
+
+def has_prev(path: Path) -> bool:
+    """Whether the path is measured from a known previous close."""
+    return bool(np.isfinite(path.gap))
 
 
 # ---------- Sidebar ----------
@@ -59,23 +77,28 @@ with st.sidebar:
                            disabled=not days)
         end_time = st.time_input("Nifty window end (IST)", value=MARKET_CLOSE, step=60)
 
-    interval = st.slider("Return interval (minutes)", 1, 15, 5,
-                         help="Minutes per hop for return correlation and direction match.")
+    interval = st.slider("Move interval (minutes)", 1, 15, 5,
+                         help="Minutes per hop when comparing the size and direction of moves.")
     min_cov = st.slider("Min data coverage (%)", 0, 100, 70,
                         help="Overlap with Nifty's bars needed to rank an index.") / 100
-    st.caption("Score weights: " + ", ".join(f"{k.replace('_', ' ')} {int(v * 100)}%"
+    st.caption("Score weights: " + ", ".join(f"{LABELS[k]} {int(v * 100)}%"
                                              for k, v in WEIGHTS.items()))
 
 
-def path_frame(path: Path) -> tuple[pd.Series, list[str]]:
-    """Path on a full-minute elapsed grid (NaN where not trading, so lines break) plus IST clock labels."""
+def path_frame(path: Path) -> tuple[pd.Series, list[list[str]]]:
+    """Path on a full-minute elapsed grid (NaN where not trading, so lines break) plus hover
+    labels per minute: IST time, points from previous close, index level."""
     v = path.values
     if v.empty:
         return v, []
     grid = range(0, int(v.index[-1]) + 1)
     full = v.reindex(grid)
-    clock = pd.Series(path.clock().strftime("%H:%M"), index=v.index).reindex(grid).fillna("")
-    return full, clock.tolist()
+    labels = pd.DataFrame({
+        "clock": path.clock().strftime("%H:%M"),
+        "points": [f"{p:+,.0f}" for p in path.points],
+        "level": [f"{x:,.2f}" for x in path.levels],
+    }, index=v.index).reindex(grid).fillna("")
+    return full, labels.values.tolist()
 
 
 def chart(nifty: Path, other: Path, other_name: str) -> go.Figure:
@@ -84,24 +107,27 @@ def chart(nifty: Path, other: Path, other_name: str) -> go.Figure:
         (nifty, "Nifty 50", NIFTY_COLOR, 2.5),
         (other, other_name, OTHER_COLOR, 2),
     ]:
-        values, clock = path_frame(path)
+        values, labels = path_frame(path)
         if values.empty:
             continue
         x = EPOCH + pd.to_timedelta(values.index, unit="min")
         # The latest value rides in the legend rather than an end-of-line label, which
         # would need a wide right margin that squeezes the plot on a phone.
+        latest = fmt_move(path.values.iloc[-1], path.points.iloc[-1] if has_prev(path) else np.nan)
         fig.add_trace(go.Scatter(
-            x=x, y=values.values, name=f"{name} {values.dropna().iloc[-1]:+.2f}%", mode="lines",
-            customdata=clock, line=dict(color=color, width=width), connectgaps=False,
-            hovertemplate="%{y:+.2f}% at %{customdata} IST<extra>" + name + "</extra>",
+            x=x, y=values.values, name=f"{name} {latest}", mode="lines",
+            customdata=labels, line=dict(color=color, width=width), connectgaps=False,
+            hovertemplate=("%{y:+.2f}% (%{customdata[1]} pts) · %{customdata[2]} "
+                           "at %{customdata[0]} IST<extra>" + name + "</extra>"),
         ))
     fig.add_hline(y=0, line_width=1, line_color="rgba(128,128,128,0.5)")
     x_title = "Trading time since open (h:mm)" if mode == OWN_OPEN else "Time since 9:15 IST (h:mm)"
+    y_title = "Change from previous close" if has_prev(nifty) else "Change since open"
     fig.update_layout(
         height=380, margin=dict(l=10, r=10, t=10, b=10), hovermode="x unified",
         dragmode=False,  # so a touch drag scrolls the page instead of zooming
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
-        yaxis=dict(title="Change since open", ticksuffix="%", zeroline=False, fixedrange=True,
+        yaxis=dict(title=y_title, ticksuffix="%", zeroline=False, fixedrange=True,
                    gridcolor="rgba(128,128,128,0.15)"),
         xaxis=dict(title=x_title, tickformat="%H:%M", hoverformat="+%H:%M", showgrid=False,
                    fixedrange=True),
@@ -113,14 +139,18 @@ def results_table(results) -> pd.DataFrame:
     rows = []
     for i, r in enumerate(results, start=1):
         # Score sits next to the name so it shows on a phone without scrolling sideways.
-        row = {"Rank": i, "Index": r.name, "Score": r.score}
+        row = {
+            "Rank": i, "Index": r.name, "Score": r.score,
+            "Opening gap": fmt_move(r.gap, r.gap_points),
+            "Now": fmt_move(r.now, r.now_points if np.isfinite(r.gap) else np.nan),
+            "Level gap (pp)": r.level_rmse,
+            "Move size match": r.move_match * 100,
+            "Shape": r.shape,
+            "Direction": r.direction * 100,
+        }
         if mode == OWN_OPEN:
             row["Opens (IST)"] = r.anchor.strftime("%H:%M") if r.anchor is not None else "—"
         row.update({
-            "Path corr": r.path_corr,
-            "Return corr": r.return_corr,
-            "Direction match": r.direction * 100,
-            "Gap RMSE (pp)": r.rmse,
             "Coverage": r.coverage * 100,
             "Compared to (IST)": r.last_bar.strftime("%H:%M") if r.last_bar is not None else "—",
         })
@@ -158,13 +188,17 @@ def dashboard() -> None:
         st.info("The window ends before Nifty's 9:15 IST open.")
         return
 
+    daily = load_daily(tickers)
+    nifty_prev = prev_close(daily.get(NIFTY, pd.Series(dtype=float)), sel_day)
+    prevs = {n: prev_close(daily.get(CANDIDATES[n], pd.Series(dtype=float)), sel_day) for n in names}
     others = {n: data.get(CANDIDATES[n], pd.Series(dtype=float)) for n in names}
-    results = rank(nifty, others, sel_day, elapsed, mode=mode, interval=interval, min_coverage=min_cov)
+    results = rank(nifty, others, sel_day, elapsed, mode=mode, interval=interval,
+                   min_coverage=min_cov, prev_closes=prevs, nifty_prev=nifty_prev)
     ranked = [r for r in results if r.status == "ranked"]
     partial = [r for r in results if r.status == "partial"]
     missing = [r for r in results if r.status == "no data"]
 
-    nifty_path = session_path(nifty, sel_day, elapsed, mode)
+    nifty_path = session_path(nifty, sel_day, elapsed, mode, nifty_prev)
     nv = nifty_path.values
     last_bar = nifty_path.clock()[-1] if not nv.empty else None
 
@@ -177,21 +211,31 @@ def dashboard() -> None:
         sub += f" · updated {now:%H:%M:%S} IST, every {refresh}s"
     st.caption(sub)
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     if ranked:
         c1.metric("Closest match", ranked[0].name, f"score {ranked[0].score:.0f} / 100",
                   delta_color="off")
     else:
         c1.metric("Closest match", "—")
-    c2.metric("Nifty since 9:15", f"{nv.iloc[-1]:+.2f}%" if last_bar is not None else "—")
+    if last_bar is not None and has_prev(nifty_path):
+        c2.metric("Nifty vs previous close", f"{nv.iloc[-1]:+.2f}%",
+                  f"{nifty_path.points.iloc[-1]:+,.0f} pts · {nifty_path.levels.iloc[-1]:,.2f}")
+        c3.metric("Nifty opening gap", f"{nifty_path.gap:+.2f}%",
+                  f"{nifty_path.gap * nifty_path.base / 100:+,.0f} pts")
+    else:
+        c2.metric("Nifty since 9:15", f"{nv.iloc[-1]:+.2f}%" if last_bar is not None else "—")
+        c3.metric("Nifty opening gap", "—")
     if last_bar is not None:
         lag = ""
         if live and sel_day == now.date():
             lag = f"{int((now - last_bar) / pd.Timedelta(minutes=1))} min ago"
-        c3.metric("Nifty last bar", f"{last_bar:%H:%M} IST", lag, delta_color="off")
+        c4.metric("Nifty last bar", f"{last_bar:%H:%M} IST", lag, delta_color="off")
     else:
-        c3.metric("Nifty last bar", "—")
+        c4.metric("Nifty last bar", "—")
 
+    if not has_prev(nifty_path):
+        st.warning("Nifty's previous close is unavailable, so paths start from the open and "
+                   "opening gaps are not scored.")
     if len(nv) < EARLY_BARS:
         st.warning(f"Only {len(nv)} Nifty bars so far. Matches are noisy until about "
                    f"{EARLY_BARS} bars are in.")
@@ -205,26 +249,32 @@ def dashboard() -> None:
     choice = st.selectbox("Compare Nifty with", [AUTO] + [n for n in names if n in with_data],
                           key="compare")
     other_name = (ranked[0].name if ranked else partial[0].name) if choice == AUTO else choice
-    other_path = session_path(others[other_name], sel_day, elapsed, mode)
+    other_path = session_path(others[other_name], sel_day, elapsed, mode, prevs.get(other_name))
     st.plotly_chart(chart(nifty_path, other_path, other_name), width="stretch",
                     config={"displayModeBar": False})
+    base_note = ("Both lines are measured from their previous close, so each starts at its "
+                 "opening gap. " if has_prev(nifty_path) else "")
     if mode == OWN_OPEN and other_path.anchor is not None:
         st.caption(f"Nifty 9:15 → {end:%H:%M} IST vs {other_name} "
                    f"{other_path.anchor:%H:%M} → {other_path.clock()[-1]:%H:%M} IST, both from their "
-                   "own open. Time is trading time: lunch breaks are skipped so both lines run "
-                   "side by side. Tap or hover to see each bar's IST time.")
+                   f"own open. {base_note}Time is trading time: lunch breaks are skipped so both "
+                   "lines run side by side. Tap or hover for points, level and IST time.")
     else:
-        st.caption("Lines break where an index was not trading (lunch breaks, closed markets). "
-                   "Nothing is forward-filled.")
+        st.caption(f"{base_note}Lines break where an index was not trading (lunch breaks, "
+                   "closed markets). Nothing is forward-filled.")
 
     # ---------- Tables ----------
     cols = {
         "Index": st.column_config.TextColumn("Index", pinned=True),
         "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.0f"),
-        "Path corr": st.column_config.NumberColumn(format="%.2f"),
-        "Return corr": st.column_config.NumberColumn(format="%.2f"),
-        "Direction match": st.column_config.NumberColumn(format="%.0f%%"),
-        "Gap RMSE (pp)": st.column_config.NumberColumn(format="%.2f"),
+        "Opening gap": st.column_config.TextColumn(help="Open vs previous close"),
+        "Now": st.column_config.TextColumn(help="Latest in the window vs previous close"),
+        "Level gap (pp)": st.column_config.NumberColumn(
+            format="%.2f", help="Typical distance between the two lines, in percentage points"),
+        "Move size match": st.column_config.NumberColumn(
+            format="%.0f%%", help="How alike each interval's move is in size and sign"),
+        "Shape": st.column_config.NumberColumn(format="%.2f", help="Path correlation"),
+        "Direction": st.column_config.NumberColumn(format="%.0f%%", help="Intervals moving the same way"),
         "Coverage": st.column_config.NumberColumn(format="%.0f%%"),
     }
     st.subheader("Ranking")

@@ -1,13 +1,18 @@
 """Session alignment and similarity scoring against Nifty 50.
 
-Paths are indexed by elapsed minutes from an anchor, so two indices can be compared
-either from each one's own session open ("own open", the default) or over the same
-IST clock window starting 9:15 ("same clock").
+Each path is the % change from the index's previous official close, so it starts at the
+opening gap. Paths are indexed by elapsed minutes from an anchor, so two indices can be
+compared either from each one's own session open ("own open", the default) or over the
+same IST clock window starting 9:15 ("same clock").
+
+The score rewards matching the size of moves, not just the shape: an index that opens
++3% and then moves like Nifty is further away than one that opens and moves by about
+as much as Nifty does.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, time
 
 import numpy as np
@@ -34,14 +39,24 @@ CANDIDATES: dict[str, str] = {
 }
 
 WEIGHTS = {
-    "path_corr": 0.35,
-    "return_corr": 0.25,
-    "direction": 0.15,
-    "closeness": 0.25,
+    "level": 0.35,      # how close the two lines are, gap included
+    "moves": 0.25,      # how alike each interval's move is in size and sign
+    "gap": 0.15,        # how alike the opening gaps are
+    "shape": 0.15,      # path correlation
+    "direction": 0.10,  # how often they move the same way
+}
+LABELS = {
+    "level": "Level closeness",
+    "moves": "Move size match",
+    "gap": "Opening gap match",
+    "shape": "Shape",
+    "direction": "Direction",
 }
 
-# RMSE (in percentage points) at which closeness drops to 1/e.
-CLOSENESS_SCALE = 0.5
+# RMSE between paths (percentage points) at which level closeness drops to 1/e.
+LEVEL_SCALE = 0.5
+# Difference in opening gaps (percentage points) at which gap match drops to 1/e.
+GAP_SCALE = 0.25
 MIN_POINTS = 5
 MIN_RETURNS = 3
 # A gap in bars longer than this (minutes) is a session break, e.g. a lunch break.
@@ -69,13 +84,28 @@ def day_bars(series: pd.Series, day: date) -> pd.Series:
 
 @dataclass
 class Path:
-    """Cumulative % change indexed by whole minutes since `anchor`, with each bar's IST time."""
+    """% change from `base`, indexed by whole minutes since `anchor`.
+
+    `levels` holds the index's price at each point and `times` the bar's IST time.
+    `base` is the previous official close when known (then `gap` is the opening gap in %),
+    else the first bar or the 9:15 price, and `gap` is NaN.
+    """
     values: pd.Series
-    anchor: pd.Timestamp | None
+    anchor: pd.Timestamp | None = None
     times: pd.DatetimeIndex | None = None
+    levels: pd.Series | None = None
+    base: float = float("nan")
+    gap: float = float("nan")
 
     def clock(self) -> pd.DatetimeIndex:
         return self.times
+
+    @property
+    def points(self) -> pd.Series:
+        return self.levels - self.base
+
+
+EMPTY = Path(pd.Series(dtype=float))
 
 
 def trading_minutes(index: pd.DatetimeIndex, anchor: pd.Timestamp) -> np.ndarray:
@@ -89,37 +119,41 @@ def trading_minutes(index: pd.DatetimeIndex, anchor: pd.Timestamp) -> np.ndarray
     return (clock - np.cumsum(breaks)).astype(int)
 
 
-def session_path(series: pd.Series, day: date, elapsed: int, mode: str = OWN_OPEN) -> Path:
+def session_path(series: pd.Series, day: date, elapsed: int, mode: str = OWN_OPEN,
+                 prev_close: float | None = None) -> Path:
     """The index's path over the first `elapsed` minutes after its anchor on `day`.
 
-    OWN_OPEN: anchor and base are the index's first bar of the day (its own open), and
-    minutes are trading minutes, so lunch breaks are skipped and every path runs as long
-    as Nifty's.
-    SAME_CLOCK: anchor is 9:15 IST and minutes are clock minutes; the base is the last bar
-    at or before 9:15 that day (an index already trading or on lunch), else the first bar after.
+    OWN_OPEN: anchored at the index's first bar of the day (its own open), in trading
+    minutes, so lunch breaks are skipped and every path runs as long as Nifty's.
+    SAME_CLOCK: anchored at 9:15 IST, in clock minutes.
+    Both measure from `prev_close`. Without it, the base falls back to the first bar
+    (own open) or the last bar at or before 9:15 (same clock).
     """
     bars = day_bars(series, day)
-    empty = Path(pd.Series(dtype=float), None)
     if bars.empty:
-        return empty
+        return EMPTY
+    has_prev = prev_close is not None and np.isfinite(prev_close) and prev_close > 0
     if mode == OWN_OPEN:
         anchor = bars.index[0]
-        base = bars.iloc[0]
         mins = trading_minutes(bars.index, anchor)
+        fallback = bars.iloc[0]
     else:
         anchor = nifty_open(day)
-        before = bars[bars.index <= anchor]
         if bars[bars.index >= anchor].empty:
-            return empty
-        base = before.iloc[-1] if not before.empty else bars[bars.index >= anchor].iloc[0]
+            return EMPTY
+        before = bars[bars.index <= anchor]
+        fallback = before.iloc[-1] if not before.empty else bars[bars.index >= anchor].iloc[0]
         mins = ((bars.index - anchor) / pd.Timedelta(minutes=1)).to_numpy().astype(int)
+    base = float(prev_close) if has_prev else float(fallback)
     keep = (mins >= 0) & (mins <= elapsed)
     if not keep.any() or base == 0 or not np.isfinite(base):
-        return empty
+        return EMPTY
     window = bars[keep]
-    values = pd.Series((window.values / base - 1.0) * 100.0, index=mins[keep])
-    dup = values.index.duplicated(keep="last")
-    return Path(values[~dup], anchor, window.index[~dup])
+    dup = pd.Index(mins[keep]).duplicated(keep="last")
+    idx = mins[keep][~dup]
+    levels = pd.Series(window.values[~dup], index=idx)
+    gap = (bars.iloc[0] / base - 1.0) * 100.0 if has_prev else float("nan")
+    return Path((levels / base - 1.0) * 100.0, anchor, window.index[~dup], levels, base, gap)
 
 
 def align(a: pd.Series, b: pd.Series) -> pd.DataFrame:
@@ -130,7 +164,7 @@ def align(a: pd.Series, b: pd.Series) -> pd.DataFrame:
 def interval_returns(aligned: pd.DataFrame, minutes: int) -> pd.DataFrame:
     """Changes over exact `minutes`-minute hops where both ends are aligned bars.
 
-    Hops that straddle a lunch break or missing bar are dropped rather than bridged.
+    Hops that straddle a missing bar are dropped rather than bridged.
     """
     if aligned.empty:
         return aligned
@@ -154,51 +188,75 @@ def _corr(x: pd.Series, y: pd.Series) -> float:
     return c if np.isfinite(c) else 0.0
 
 
+def move_match(rets: pd.DataFrame) -> float:
+    """1 when every interval move is the same size and sign, 0 when unrelated or opposite.
+
+    1 - sum|a - b| / sum(|a| + |b|): Nifty -0.27% vs -0.20% scores 0.85; vs +0.20% scores 0.
+    """
+    a, b = rets["nifty"].to_numpy(), rets["other"].to_numpy()
+    total = np.abs(a).sum() + np.abs(b).sum()
+    if total == 0:
+        return 1.0
+    return float(np.clip(1.0 - np.abs(a - b).sum() / total, 0.0, 1.0))
+
+
 @dataclass
 class Score:
     name: str
     ticker: str
     status: str  # "ranked", "partial", "no data"
     score: float = float("nan")
-    path_corr: float = float("nan")
-    return_corr: float = float("nan")
+    level_rmse: float = float("nan")
+    move_match: float = float("nan")
+    gap: float = float("nan")         # this index's opening gap, %
+    gap_points: float = float("nan")
+    gap_diff: float = float("nan")    # gap minus Nifty's gap, percentage points
+    shape: float = float("nan")
     direction: float = float("nan")
-    rmse: float = float("nan")
+    now: float = float("nan")         # latest % from previous close within the window
+    now_points: float = float("nan")
     coverage: float = 0.0
     points: int = 0
     anchor: pd.Timestamp | None = None
     last_bar: pd.Timestamp | None = None
-    components: dict = field(default_factory=dict)
 
 
-def score_pair(aligned: pd.DataFrame, interval: int) -> dict:
-    """Component metrics and the 0-100 score for one aligned pair."""
-    path_corr = _corr(aligned["nifty"], aligned["other"])
+def score_pair(aligned: pd.DataFrame, interval: int, nifty_gap: float = float("nan"),
+               other_gap: float = float("nan")) -> dict:
+    """Component metrics and the 0-100 score for one aligned pair.
+
+    If either opening gap is unknown, the gap component is left out and the other
+    weights are scaled up to fill 100.
+    """
+    shape = _corr(aligned["nifty"], aligned["other"])
     rets = interval_returns(aligned, interval)
     if len(rets) >= MIN_RETURNS:
-        return_corr = _corr(rets["nifty"], rets["other"])
+        moves = move_match(rets)
         sa, sb = np.sign(rets["nifty"]), np.sign(rets["other"])
         moving = (sa != 0) | (sb != 0)
         direction = float((sa[moving] == sb[moving]).mean()) if moving.any() else 0.0
     else:
-        return_corr, direction = 0.0, 0.0
+        moves, direction = 0.0, 0.0
     rmse = float(np.sqrt(((aligned["nifty"] - aligned["other"]) ** 2).mean()))
-    closeness = float(np.exp(-rmse / CLOSENESS_SCALE))
+    gap_diff = other_gap - nifty_gap
 
     parts = {
-        "path_corr": max(path_corr, 0.0),
-        "return_corr": max(return_corr, 0.0),
+        "level": float(np.exp(-rmse / LEVEL_SCALE)),
+        "moves": moves,
+        "shape": max(shape, 0.0),
         "direction": direction,
-        "closeness": closeness,
     }
-    total = 100.0 * sum(WEIGHTS[k] * v for k, v in parts.items())
+    if np.isfinite(gap_diff):
+        parts["gap"] = float(np.exp(-abs(gap_diff) / GAP_SCALE))
+    weight = sum(WEIGHTS[k] for k in parts)
+    total = 100.0 * sum(WEIGHTS[k] * v for k, v in parts.items()) / weight
     return {
         "score": total,
-        "path_corr": path_corr,
-        "return_corr": return_corr,
+        "level_rmse": rmse,
+        "move_match": moves,
+        "gap_diff": gap_diff,
+        "shape": shape,
         "direction": direction,
-        "rmse": rmse,
-        "components": parts,
     }
 
 
@@ -211,32 +269,38 @@ def rank(
     interval: int = 5,
     min_coverage: float = 0.7,
     tickers: dict[str, str] | None = None,
+    prev_closes: dict[str, float | None] | None = None,
+    nifty_prev: float | None = None,
 ) -> list[Score]:
     """Score every candidate over the first `elapsed` minutes of Nifty's session.
 
-    Ranked ones come first by score, then partial, then no data.
+    `prev_closes` maps candidate name -> previous official close. Ranked ones come first
+    by score, then partial, then no data.
     """
     tickers = tickers or CANDIDATES
-    nifty_path = session_path(nifty, day, elapsed, mode).values
-    n_nifty = len(nifty_path)
+    prev_closes = prev_closes or {}
+    npath = session_path(nifty, day, elapsed, mode, nifty_prev)
+    n_nifty = len(npath.values)
     results: list[Score] = []
     for name, series in others.items():
         ticker = tickers.get(name, name)
-        path = session_path(series, day, elapsed, mode) if series is not None else Path(pd.Series(dtype=float), None)
+        path = session_path(series, day, elapsed, mode, prev_closes.get(name)) if series is not None else EMPTY
         if path.values.empty or n_nifty == 0:
             results.append(Score(name, ticker, "no data"))
             continue
-        last_bar = path.clock()[-1]
-        aligned = align(nifty_path, path.values)
+        info = dict(
+            anchor=path.anchor, last_bar=path.clock()[-1], gap=path.gap,
+            gap_points=path.gap * path.base / 100.0, now=path.values.iloc[-1],
+            now_points=path.points.iloc[-1],
+        )
+        aligned = align(npath.values, path.values)
         coverage = len(aligned) / n_nifty
         if len(aligned) < MIN_POINTS:
-            results.append(Score(name, ticker, "no data", points=len(aligned), coverage=coverage,
-                                 anchor=path.anchor, last_bar=last_bar))
+            results.append(Score(name, ticker, "no data", points=len(aligned), coverage=coverage, **info))
             continue
-        m = score_pair(aligned, interval)
+        m = score_pair(aligned, interval, npath.gap, path.gap)
         status = "ranked" if coverage >= min_coverage else "partial"
-        results.append(Score(name, ticker, status, coverage=coverage, points=len(aligned),
-                             anchor=path.anchor, last_bar=last_bar, **m))
+        results.append(Score(name, ticker, status, coverage=coverage, points=len(aligned), **info, **m))
 
     order = {"ranked": 0, "partial": 1, "no data": 2}
     results.sort(key=lambda r: (order[r.status], -(r.score if np.isfinite(r.score) else -1)))

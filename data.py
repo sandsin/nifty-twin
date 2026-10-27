@@ -61,6 +61,39 @@ def fetch_closes(tickers: list[str], period: str = PERIOD) -> dict[str, pd.Serie
     return out
 
 
+def fetch_daily_closes(tickers: list[str], period: str = "15d") -> dict[str, pd.Series]:
+    """Map of ticker -> official daily closes indexed by exchange date.
+
+    The last 1-minute bar can miss the closing auction (KOSPI, Nikkei), so previous closes
+    come from daily bars.
+    """
+    out = {t: pd.Series(dtype=float) for t in tickers}
+    if not tickers:
+        return out
+    try:
+        raw = yf.download(tickers, period=period, interval="1d", group_by="ticker",
+                          auto_adjust=False, progress=False, threads=False)
+    except Exception:
+        return out
+    if raw is None or raw.empty:
+        return out
+    for t in tickers:
+        try:
+            close = raw[t]["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw["Close"]
+        except KeyError:
+            continue
+        close = close.dropna().astype(float)
+        close.index = [ts.date() for ts in close.index]
+        out[t] = close
+    return out
+
+
+def prev_close(daily: pd.Series, day) -> float | None:
+    """Official close of the last session before `day`."""
+    before = daily[[d < day for d in daily.index]] if not daily.empty else daily
+    return float(before.iloc[-1]) if not before.empty else None
+
+
 def trading_days(series: pd.Series) -> list:
     """Distinct IST dates with bars, newest first."""
     if series.empty:
