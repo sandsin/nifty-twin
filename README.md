@@ -9,7 +9,9 @@ Finds which Asian index's session most resembles Nifty 50's since the 9:15 AM IS
 | `app.py` | Streamlit dashboard (auto-updating) |
 | `similarity.py` | Alignment to 9:15 IST and scoring logic |
 | `market_data.py` | 1-minute data loader (Yahoo Finance via `yfinance`) |
+| `ai_analysis.py` | AI commentary on the ranking (Claude via the Anthropic API) |
 | `test_similarity.py` | Tests on synthetic data |
+| `test_ai_analysis.py` | Tests for the AI panel (no API calls) |
 | `requirements.txt` | Dependencies (Streamlit 1.50+, Plotly for the chart) |
 
 ## Run locally
@@ -19,7 +21,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Optional: `python test_similarity.py` to check the scoring logic (should print `OK`).
+Optional: `python test_similarity.py` and `python test_ai_analysis.py` to check the scoring and AI panel (each should print `OK`).
 
 ## How it works
 
@@ -41,6 +43,21 @@ Optional: `python test_similarity.py` to check the scoring logic (should print `
    Example: Nifty opens +12 pts and falls 70, and Hang Seng opens +10 and falls 50. They score well above KOSPI opening +3% and then moving exactly like Nifty, because KOSPI's level is far away the whole time. Moves are compared in %, not raw points: 50 points on Nikkei (~40,000) is a smaller move than 50 on Nifty (~25,000).
    If a previous close is unavailable, paths start from the open and the gap component is left out.
 5. Indices with less than the minimum coverage (default 70%) are listed as "partial data" and not ranked.
+
+## AI analysis
+
+Below the ranking, **Analyze with AI** sends what the page currently shows to Claude (`claude-opus-5-5`) and streams back a short read. It covers which index is tracking Nifty and why, how close the match really is, where the leaders diverge, and what makes today's read unreliable. You can also type a question, for example "Why is ASX ranked above Hang Seng?".
+
+- It runs only when you click, never on the auto-refresh, so each click is one API request (a few US cents).
+- The briefing it sends is the numbers on the page: gaps, % moves, score components, and paths sampled every 15 minutes. Nothing else.
+- It is commentary, not trading advice. It is told not to recommend trades or predict Nifty.
+
+To turn it on, add an Anthropic API key (from console.anthropic.com):
+
+- **Locally**: create `.streamlit/secrets.toml` containing `ANTHROPIC_API_KEY = "sk-ant-..."`. The file is git-ignored.
+- **Streamlit Cloud**: **Manage app → Settings → Secrets**, and paste the same line.
+
+Without a key the panel shows these steps and the rest of the app works as before.
 
 ## Indices covered
 

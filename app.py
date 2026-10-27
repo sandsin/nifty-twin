@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime, time
 
+import anthropic
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+import ai_analysis
 from market_data import fetch_closes, fetch_daily_closes, prev_close, trading_days
 from similarity import (CANDIDATES, IST, LABELS, NIFTY, OWN_OPEN, SAME_CLOCK, WEIGHTS, Path,
                         nifty_open, rank, session_path)
@@ -272,6 +274,14 @@ def dashboard() -> None:
         st.caption(f"{base_note}Lines break where an index was not trading (lunch breaks, "
                    "closed markets). Nothing is forward-filled.")
 
+    st.session_state["ai_context"] = ai_briefing(
+        sel_day, end, elapsed, nifty_path, results,
+        {"Nifty 50": nifty_path} | {r.name: session_path(others[r.name], sel_day, elapsed, mode,
+                                                          prevs.get(r.name))
+                                    for r in (ranked + partial)[:3]}
+        | {other_name: other_path},
+    )
+
     # ---------- Tables ----------
     cols = {
         "Index": st.column_config.TextColumn("Index", pinned=True),
@@ -304,4 +314,86 @@ def dashboard() -> None:
     st.caption("Similarity of intraday paths does not predict what Nifty does next. Not trading advice.")
 
 
+def ai_briefing(sel_day, end, elapsed, nifty_path: Path, results, paths: dict[str, Path]) -> str:
+    """The dashboard's current state as text for the AI panel."""
+    def sampled(p: Path) -> list[tuple[int, str, float]]:
+        v = p.values
+        if v.empty:
+            return []
+        keep = [m for m in v.index if m % ai_analysis.SAMPLE_EVERY == 0] + [v.index[-1]]
+        clock = pd.Series(p.clock(), index=v.index)
+        return [(int(m), f"{clock[m]:%H:%M}", float(v[m])) for m in dict.fromkeys(keep)]
+
+    nv = nifty_path.values
+    return ai_analysis.build_context(
+        day=f"{sel_day:%a %d %b %Y}",
+        mode=MODES[mode],
+        window=f"Nifty 9:15 → {end:%H:%M} IST ({fmt_elapsed(elapsed)}), "
+               + ("live" if live else "replay"),
+        nifty={
+            "gap": nifty_path.gap,
+            "gap_points": nifty_path.gap * nifty_path.base / 100 if has_prev(nifty_path) else 0.0,
+            "since_open": nifty_path.since_open.iloc[-1] if not nv.empty else np.nan,
+            "vs_prev": nv.iloc[-1] if not nv.empty and has_prev(nifty_path) else np.nan,
+            "last_bar": f"{nifty_path.clock()[-1]:%H:%M}" if not nv.empty else "n/a",
+        },
+        results=[{
+            "name": r.name, "status": r.status, "score": r.score, "gap": r.gap,
+            "gap_diff": r.gap_diff, "since_open": r.since_open, "vs_prev": r.now,
+            "opens": f"{r.anchor:%H:%M}" if r.anchor is not None else "n/a",
+            "coverage": r.coverage, "level_rmse": r.level_rmse, "move_match": r.move_match,
+            "shape": r.shape, "direction": r.direction,
+        } for r in results],
+        paths={name: sampled(p) for name, p in paths.items() if not p.values.empty},
+    )
+
+
+def ai_panel() -> None:
+    """On-demand Claude analysis of what the dashboard currently shows."""
+    st.subheader("AI analysis")
+    context = st.session_state.get("ai_context")
+    client = ai_analysis.make_client()
+    if client is None:
+        st.info("Add an Anthropic API key to turn this on: put `ANTHROPIC_API_KEY = \"sk-ant-...\"` "
+                "in `.streamlit/secrets.toml` locally, or under **Manage app → Settings → Secrets** "
+                "on Streamlit Cloud.")
+        return
+    if not context:
+        st.caption("The analysis runs once the dashboard has data for this window.")
+        return
+    question = st.text_input("Ask a question (optional)", key="ai_question",
+                             placeholder="e.g. Why is ASX ranked above Hang Seng?")
+    if st.button("Analyze with AI", type="primary"):
+        try:
+            with st.spinner("Claude is reading the dashboard…"):
+                stream = ai_analysis.stream_analysis(client, context, question)
+                first = next(stream, "")  # hold the spinner until the first words arrive
+            answer = st.write_stream(_chain(first, stream))
+            history = st.session_state.setdefault("ai_history", [])
+            history.insert(0, (f"{pd.Timestamp.now(tz=IST):%H:%M:%S}", question.strip(), answer))
+            del history[5:]
+            return
+        except anthropic.AuthenticationError:
+            st.error("The Anthropic API key was rejected. Check `ANTHROPIC_API_KEY`.")
+        except anthropic.RateLimitError:
+            st.error("Rate limited by the Anthropic API. Try again in a minute.")
+        except anthropic.APIStatusError as e:
+            st.error(f"Anthropic API error {e.status_code}. Try again shortly.")
+        except anthropic.APIConnectionError:
+            st.error("Couldn't reach the Anthropic API. Check the network and try again.")
+    for when, q, answer in st.session_state.get("ai_history", []):
+        with st.container(border=True):
+            st.caption(f"{when} IST" + (f" · {q}" if q else ""))
+            st.markdown(answer)
+    st.caption(f"Each click is one {ai_analysis.MODEL} request (a few US cents). The analysis "
+               "only sees the numbers on this page and is not trading advice.")
+
+
+def _chain(first: str, rest):
+    yield first
+    yield from rest
+
+
 st.fragment(run_every=refresh if live else None)(dashboard)()
+st.divider()
+st.fragment(ai_panel)()
