@@ -128,6 +128,21 @@ def test_claude_ai_url():
     assert len(url) <= ai_analysis.URL_LIMIT and "Paths," not in text and "Index 0 " in text
 
 
+def test_chart_csv_and_where_it_goes():
+    csv = ai_analysis.chart_csv({"Nifty 50": [(0, "09:15", -0.34, 0.0), (1, "09:16", -0.3, 0.04)],
+                                 "Hang Seng": [(0, "07:00", 0.43, 0.0)]})
+    assert csv.splitlines() == [ai_analysis.CHART_COLUMNS, "Nifty 50,0,09:15,-0.340,0.000",
+                                "Nifty 50,1,09:16,-0.300,0.040", "Hang Seng,0,07:00,0.430,0.000"]
+    calls = []
+    "".join(ai_analysis.stream_analysis(fake_client(["x"], calls=calls), "CTX", None, csv))
+    assert f'<chart_data format="csv">\n{csv}</chart_data>' in calls[0]["messages"][0]["content"]
+    for text in (ai_analysis.chat_prompt("CTX", None, "f.csv"),):
+        assert "I have attached f.csv" in text and "<chart_data" not in text
+    from urllib.parse import parse_qs, urlparse
+    text = parse_qs(urlparse(ai_analysis.claude_ai_url("CTX", "Q?", "f.csv")).query)["q"][0]
+    assert "I have attached f.csv" in text and text.endswith("Question: Q?")
+
+
 def test_no_credentials_means_no_client():
     import os
     saved = {k: os.environ.pop(k, None) for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}

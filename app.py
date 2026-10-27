@@ -275,6 +275,14 @@ def dashboard() -> None:
                    "closed markets). Nothing is forward-filled.")
 
     st.session_state["ai_context_at"] = f"{pd.Timestamp.now(tz=IST):%H:%M:%S}"
+    # Every chart point, for Nifty and every index with data, as the AI's full context.
+    all_paths = {"Nifty 50": nifty_path} | {
+        n: session_path(others[n], sel_day, elapsed, mode, prevs.get(n)) for n in names}
+    st.session_state["ai_chart_csv"] = ai_analysis.chart_csv({
+        n: list(zip(p.values.index.astype(int), p.clock().strftime("%H:%M"),
+                    p.values.to_numpy(), p.since_open.to_numpy()))
+        for n, p in all_paths.items() if not p.values.empty})
+    st.session_state["ai_chart_file"] = f"nifty_twin_{sel_day:%Y-%m-%d}_{end:%H%M}.csv"
     st.session_state["ai_context"] = ai_briefing(
         sel_day, end, elapsed, nifty_path, results,
         {"Nifty 50": nifty_path} | {r.name: session_path(others[r.name], sel_day, elapsed, mode,
@@ -370,7 +378,8 @@ def ai_panel() -> None:
     if st.button("Analyze with AI", type="primary"):
         try:
             with st.spinner("Claude is reading the dashboard…"):
-                stream = ai_analysis.stream_analysis(client, context, question)
+                stream = ai_analysis.stream_analysis(
+                    client, context, question, st.session_state.get("ai_chart_csv"))
                 first = next(stream, "")  # hold the spinner until the first words arrive
             answer = st.write_stream(_chain(first, stream))
             history = st.session_state.setdefault("ai_history", [])
@@ -389,25 +398,37 @@ def ai_panel() -> None:
         with st.container(border=True):
             st.caption(f"{when} IST" + (f" · {q}" if q else ""))
             st.markdown(answer)
-    st.caption(f"Each click is one {ai_analysis.MODEL} request (a few US cents). The analysis "
+    st.caption(f"Each click is one {ai_analysis.MODEL} request with the full chart data (about 10-25 US cents). The analysis "
                "only sees the numbers on this page and is not trading advice.")
 
 
 def claude_ai_prompt(context: str, question: str) -> None:
-    """Send the analysis to a Claude.ai chat, so a Pro plan can run it without an API key."""
+    """Send the analysis to a Claude.ai chat, so a Pro plan can run it without an API key.
+
+    The full chart data is too big for a link, so it goes as a CSV the user attaches."""
     when = st.session_state.get("ai_context_at", "?")
-    st.markdown("**Analyze with your Claude.ai plan.** No API key needed. The button opens a "
-                "new Claude.ai chat with this page's numbers and your question already filled "
-                "in; press Enter there to send.")
-    c1, c2 = st.columns(2)
-    c1.link_button("Ask Claude.ai about this", ai_analysis.claude_ai_url(context, question),
+    csv = st.session_state.get("ai_chart_csv", "")
+    file_name = st.session_state.get("ai_chart_file", "nifty_twin.csv")
+    attachment = file_name if csv else None
+    st.markdown("**Analyze with your Claude.ai plan.** No API key needed.\n\n"
+                "1. **Download the chart data**: every minute of every index on the chart.\n"
+                "2. **Ask Claude.ai**: opens a new chat with the instructions, this page's "
+                "numbers and your question filled in.\n"
+                "3. **Attach the downloaded file** in that chat (paperclip or drag it in), "
+                "then press Enter.")
+    c1, c2, c3 = st.columns(3)
+    c1.download_button("1 · Download chart data", csv, file_name=file_name, mime="text/csv",
+                       on_click="ignore", width="stretch", disabled=not csv)
+    c2.link_button("2 · Ask Claude.ai", ai_analysis.claude_ai_url(context, question, attachment),
                    type="primary", width="stretch")
     # The panel doesn't auto-refresh, so the numbers are from when it last ran.
-    c2.button("Refresh numbers", width="stretch", help=f"Numbers are from {when} IST")
-    st.caption(f"Numbers as of {when} IST. Type a question above to include it.")
+    c3.button("Refresh numbers", width="stretch", help=f"Numbers are from {when} IST")
+    rows = max(csv.count("\n") - 1, 0)
+    st.caption(f"Numbers as of {when} IST · chart data: {rows:,} rows "
+               f"({len(csv.encode()) / 1024:,.0f} KB). Type a question above to include it.")
     with st.expander("Message not filled in? Copy and paste instead"):
-        st.code(ai_analysis.chat_prompt(context, question), language=None, wrap_lines=True,
-                height=240)
+        st.code(ai_analysis.chat_prompt(context, question, attachment), language=None,
+                wrap_lines=True, height=240)
         st.link_button("Open Claude.ai", "https://claude.ai/new")
 
 

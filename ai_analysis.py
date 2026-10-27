@@ -1,7 +1,8 @@
 """AI commentary on the live Nifty Twin ranking, written by Claude via the Anthropic API.
 
-The dashboard turns its current state into a plain-text briefing (`build_context`), and
-`stream_analysis` streams Claude's read of it. Calls happen only when the user asks, never
+The dashboard turns its current state into a plain-text briefing (`build_context`) plus the
+full minute-by-minute chart data as CSV (`chart_csv`), and `stream_analysis` streams Claude's
+read of both. For a Claude.ai chat the CSV goes along as an attachment instead. Calls happen only when the user asks, never
 on the auto-refresh, so cost stays at one request per click.
 """
 
@@ -16,7 +17,8 @@ import anthropic
 MODEL = "claude-opus-5-5"
 MAX_TOKENS = 64000
 EFFORT = "medium"  # short commentary on a small table; keeps answers quick
-SAMPLE_EVERY = 15  # minutes between trajectory points sent to the model
+SAMPLE_EVERY = 15  # minutes between trajectory points in the briefing
+CHART_COLUMNS = "index,minute,ist_time,vs_prev_close_pct,since_open_pct"
 
 SYSTEM = """You are the analyst inside "Nifty Twin", a live dashboard that finds which \
 Asian stock index is moving most like India's Nifty 50 today.
@@ -31,6 +33,8 @@ mode both are compared over the same IST minutes.
 included), move size match 25% (each interval's move alike in size and sign), opening gap \
 match 15%, shape 15% (correlation), direction 10%. Indices below the coverage minimum are \
 "partial" and not ranked.
+
+Chart data, when given, is CSV with one row per index per trading minute: index, minute (trading minutes since that index's own open; in "same clock" mode, minutes since 9:15 IST), ist_time, vs_prev_close_pct, since_open_pct. It is the full data behind the chart; use it to check divergences, turning points and timing in detail, citing IST times.
 
 Your job: read the briefing and explain, for a trader watching Nifty, which index is \
 tracking Nifty most closely and why, what the numbers say about how close the match \
@@ -124,16 +128,36 @@ def build_context(*, day: str, mode: str, window: str, nifty: dict, results: lis
     return "\n".join(lines)
 
 
-def _request(context: str, question: str | None) -> str:
+def chart_csv(paths: dict[str, list[tuple[int, str, float, float]]]) -> str:
+    """Every chart point as CSV. `paths` maps index name -> (minute, IST time,
+    % vs previous close, % since open) for each trading minute."""
+    rows = [CHART_COLUMNS]
+    for name, pts in paths.items():
+        rows += [f"{name},{m},{t},{v:.3f},{so:.3f}" for m, t, v, so in pts]
+    return "\n".join(rows) + "\n"
+
+
+def _request(context: str, question: str | None, chart_data: str | None = None,
+             attachment: str | None = None) -> str:
+    """The user message: briefing, then the chart data inline or a pointer to the attached
+    file, then the question."""
     ask = question.strip() if question else ""
-    return (f"<briefing>\n{context}\n</briefing>\n\n"
-            + (f"Question: {ask}" if ask else "Give your analysis of today's match."))
+    parts = [f"<briefing>\n{context}\n</briefing>"]
+    if chart_data:
+        parts.append(f'<chart_data format="csv">\n{chart_data}</chart_data>')
+    if attachment:
+        parts.append(f"I have attached {attachment}: the full minute-by-minute chart data as CSV "
+                     f"({CHART_COLUMNS}). Use it as well as the briefing; if no file is "
+                     "attached, work from the briefing alone.")
+    parts.append(f"Question: {ask}" if ask else "Give your analysis of today's match.")
+    return "\n\n".join(parts)
 
 
-def chat_prompt(context: str, question: str | None = None) -> str:
+def chat_prompt(context: str, question: str | None = None, attachment: str | None = None) -> str:
     """One paste-ready message for a Claude.ai chat: the analyst instructions plus the
     briefing, so a Pro plan gives the same kind of answer without an API key."""
-    return f"<instructions>\n{SYSTEM}\n</instructions>\n\n{_request(context, question)}"
+    return (f"<instructions>\n{SYSTEM}\n</instructions>\n\n"
+            + _request(context, question, attachment=attachment))
 
 
 # Shorter instructions for the Claude.ai link, which has to fit in a URL.
@@ -144,20 +168,23 @@ closeness 35%, move size match 25%, opening gap match 15%, shape 15%, direction 
 Using only the briefing: say which index tracks Nifty most closely and why, how close the \
 match really is (under ~40 means no close twin), where the leaders diverge, and what makes \
 the read unreliable. Use % with up/down, not points. Not advice: no trade calls or Nifty \
-predictions. About 150-250 words: a headline, then short bullets. Answer any question first."""
+predictions. About 150-250 words: a headline, then short bullets. Answer any question first.
+An attached CSV, if any, has every chart point (one row per index per trading minute); use \
+it for detail and cite IST times."""
 
 CLAUDE_AI_NEW = "https://claude.ai/new?q="
 URL_LIMIT = 8000  # encoded characters; much longer URLs get rejected by some servers
 
 
-def claude_ai_url(context: str, question: str | None = None) -> str:
+def claude_ai_url(context: str, question: str | None = None,
+                  attachment: str | None = None) -> str:
     """Link that opens a Claude.ai chat with the analysis prompt pre-filled.
 
     Uses the short instructions; if that is still too long, drops the sampled paths and
     then trims the ranking to the top rows.
     """
     def link(ctx: str) -> str:
-        text = f"{SHORT_SYSTEM}\n\n{_request(ctx, question)}"
+        text = f"{SHORT_SYSTEM}\n\n{_request(ctx, question, attachment=attachment)}"
         return CLAUDE_AI_NEW + quote(text, safe="")
 
     url = link(context)
@@ -173,10 +200,10 @@ def claude_ai_url(context: str, question: str | None = None) -> str:
     return url
 
 
-def stream_analysis(client: anthropic.Anthropic, context: str,
-                    question: str | None = None) -> Iterator[str]:
+def stream_analysis(client: anthropic.Anthropic, context: str, question: str | None = None,
+                    chart_data: str | None = None) -> Iterator[str]:
     """Yield Claude's analysis as it streams. API errors propagate to the caller."""
-    prompt = _request(context, question)
+    prompt = _request(context, question, chart_data=chart_data)
     with client.beta.messages.stream(
         model=MODEL,
         max_tokens=MAX_TOKENS,

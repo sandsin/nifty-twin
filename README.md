@@ -48,11 +48,17 @@ Optional: `python test_similarity.py` and `python test_ai_analysis.py` to check 
 
 Below the ranking, **Analyze with AI** sends what the page currently shows to Claude (`claude-opus-5-5`) and streams back a short read. It covers which index is tracking Nifty and why, how close the match really is, where the leaders diverge, and what makes today's read unreliable. You can also type a question, for example "Why is ASX ranked above Hang Seng?".
 
-- It runs only when you click, never on the auto-refresh, so each click is one API request (a few US cents).
-- The briefing it sends is the numbers on the page: gaps, % moves, score components, and paths sampled every 15 minutes. Nothing else.
+- It runs only when you click, never on the auto-refresh, so each click is one API request.
+- It sends the numbers on the page: gaps, % moves and score components, plus the full chart data (every minute of every index) as CSV. Nothing else. With the full data a request costs roughly 10-25 US cents, more late in the day.
 - It is commentary, not trading advice. It is told not to recommend trades or predict Nifty.
 
-**No API key? Use your Claude.ai plan.** **Ask Claude.ai about this** opens a new Claude.ai chat with the analysis prompt already filled in: short instructions, this page's live numbers and your question. Press Enter there to send. A Claude Pro plan doesn't include API access, so this is how to use it here. Click **Refresh numbers** for a fresh snapshot first. The prompt travels in the link (`claude.ai/new?q=...`), which is capped at 8,000 characters; the path samples, then the lowest ranking rows, are dropped if needed. If the message doesn't appear, the expander below the button has the full prompt to copy and paste.
+**No API key? Use your Claude.ai plan.** A Claude Pro plan doesn't include API access, so the panel hands the analysis to a Claude.ai chat in three steps:
+
+1. **Download chart data**: a CSV with every chart point, one row per index per trading minute (`index, minute, ist_time, vs_prev_close_pct, since_open_pct`), for Nifty and every index with data. A full day is about 4,000 rows (~140 KB).
+2. **Ask Claude.ai**: opens a new chat with short instructions, this page's numbers and your question filled in (`claude.ai/new?q=...`, capped at 8,000 characters). The prompt tells Claude to use the attached file.
+3. **Attach the file** in that chat and press Enter.
+
+Click **Refresh numbers** first for a fresh snapshot. If the message doesn't appear, the expander below the buttons has the full prompt to copy and paste.
 
 To get answers inside the app instead, add an Anthropic API key (from platform.claude.com; API usage is billed separately from Pro):
 
