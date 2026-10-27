@@ -52,12 +52,14 @@ Below the ranking, **Analyze with AI** sends what the page currently shows to Cl
 - The briefing it sends is the numbers on the page: gaps, % moves, score components, and paths sampled every 15 minutes. Nothing else.
 - It is commentary, not trading advice. It is told not to recommend trades or predict Nifty.
 
-To turn it on, add an Anthropic API key (from console.anthropic.com):
+**No API key? Use your Claude.ai plan.** The panel shows a ready-to-paste prompt: the same instructions plus the live numbers, with a copy button. Copy it, click **Open Claude.ai**, and paste it into a new chat. A Claude Pro plan does not include API access, so this is the way to use it here. Click **Refresh numbers** for a fresh snapshot.
+
+To get answers inside the app instead, add an Anthropic API key (from platform.claude.com; API usage is billed separately from Pro):
 
 - **Locally**: create `.streamlit/secrets.toml` containing `ANTHROPIC_API_KEY = "sk-ant-..."`. The file is git-ignored.
 - **Streamlit Cloud**: **Manage app → Settings → Secrets**, and paste the same line.
 
-Without a key the panel shows these steps and the rest of the app works as before.
+Without a key, the panel shows the Claude.ai prompt and the rest of the app works as before.
 
 ## Indices covered
 

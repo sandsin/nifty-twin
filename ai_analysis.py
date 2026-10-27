@@ -123,12 +123,22 @@ def build_context(*, day: str, mode: str, window: str, nifty: dict, results: lis
     return "\n".join(lines)
 
 
+def _request(context: str, question: str | None) -> str:
+    ask = question.strip() if question else ""
+    return (f"<briefing>\n{context}\n</briefing>\n\n"
+            + (f"Question: {ask}" if ask else "Give your analysis of today's match."))
+
+
+def chat_prompt(context: str, question: str | None = None) -> str:
+    """One paste-ready message for a Claude.ai chat: the analyst instructions plus the
+    briefing, so a Pro plan gives the same kind of answer without an API key."""
+    return f"<instructions>\n{SYSTEM}\n</instructions>\n\n{_request(context, question)}"
+
+
 def stream_analysis(client: anthropic.Anthropic, context: str,
                     question: str | None = None) -> Iterator[str]:
     """Yield Claude's analysis as it streams. API errors propagate to the caller."""
-    ask = question.strip() if question else ""
-    prompt = (f"<briefing>\n{context}\n</briefing>\n\n"
-              + (f"Question: {ask}" if ask else "Give your analysis of today's match."))
+    prompt = _request(context, question)
     with client.beta.messages.stream(
         model=MODEL,
         max_tokens=MAX_TOKENS,

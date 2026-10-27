@@ -274,6 +274,7 @@ def dashboard() -> None:
         st.caption(f"{base_note}Lines break where an index was not trading (lunch breaks, "
                    "closed markets). Nothing is forward-filled.")
 
+    st.session_state["ai_context_at"] = f"{pd.Timestamp.now(tz=IST):%H:%M:%S}"
     st.session_state["ai_context"] = ai_briefing(
         sel_day, end, elapsed, nifty_path, results,
         {"Nifty 50": nifty_path} | {r.name: session_path(others[r.name], sel_day, elapsed, mode,
@@ -352,17 +353,20 @@ def ai_panel() -> None:
     """On-demand Claude analysis of what the dashboard currently shows."""
     st.subheader("AI analysis")
     context = st.session_state.get("ai_context")
-    client = ai_analysis.make_client()
-    if client is None:
-        st.info("Add an Anthropic API key to turn this on: put `ANTHROPIC_API_KEY = \"sk-ant-...\"` "
-                "in `.streamlit/secrets.toml` locally, or under **Manage app → Settings → Secrets** "
-                "on Streamlit Cloud.")
-        return
     if not context:
         st.caption("The analysis runs once the dashboard has data for this window.")
         return
     question = st.text_input("Ask a question (optional)", key="ai_question",
                              placeholder="e.g. Why is ASX ranked above Hang Seng?")
+    client = ai_analysis.make_client()
+    if client is None:
+        claude_ai_prompt(context, question)
+        st.caption("Have an Anthropic API key? Add `ANTHROPIC_API_KEY = \"sk-ant-...\"` to "
+                   "`.streamlit/secrets.toml`, or under **Manage app → Settings → Secrets** on "
+                   "Streamlit Cloud, to get answers right here instead.")
+        return
+    with st.expander("Or use your Claude.ai plan (copy and paste)"):
+        claude_ai_prompt(context, question)
     if st.button("Analyze with AI", type="primary"):
         try:
             with st.spinner("Claude is reading the dashboard…"):
@@ -387,6 +391,22 @@ def ai_panel() -> None:
             st.markdown(answer)
     st.caption(f"Each click is one {ai_analysis.MODEL} request (a few US cents). The analysis "
                "only sees the numbers on this page and is not trading advice.")
+
+
+def claude_ai_prompt(context: str, question: str) -> None:
+    """Paste-ready prompt for a Claude.ai chat, so a Pro plan can run the analysis."""
+    st.markdown("**Analyze with your Claude.ai plan.** No API key needed.\n\n"
+                "1. Copy the prompt below with the copy icon at its top right.\n"
+                "2. Open Claude.ai and paste it into a new chat.")
+    st.code(ai_analysis.chat_prompt(context, question), language=None, wrap_lines=True,
+            height=240)
+    c1, c2 = st.columns(2)
+    c1.link_button("Open Claude.ai", "https://claude.ai/new", width="stretch")
+    # The panel doesn't auto-refresh, so the numbers above are from when it last ran.
+    c2.button("Refresh numbers", width="stretch",
+              help=f"Prompt numbers are from {st.session_state.get('ai_context_at', '?')} IST")
+    st.caption(f"Numbers as of {st.session_state.get('ai_context_at', '?')} IST. Type a question "
+               "above to include it in the prompt.")
 
 
 def _chain(first: str, rest):

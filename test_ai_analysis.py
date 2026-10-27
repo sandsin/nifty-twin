@@ -102,6 +102,13 @@ def test_sdk_sends_expected_request():
     assert "thinking" not in body and "temperature" not in body
 
 
+def test_chat_prompt():
+    text = ai_analysis.chat_prompt("CTX", "Why ASX?")
+    assert text.startswith("<instructions>\n") and ai_analysis.SYSTEM in text
+    assert "<briefing>\nCTX\n</briefing>" in text and text.endswith("Question: Why ASX?")
+    assert ai_analysis.chat_prompt("CTX").endswith("Give your analysis of today's match.")
+
+
 def test_no_credentials_means_no_client():
     import os
     saved = {k: os.environ.pop(k, None) for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
