@@ -9,7 +9,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from data import fetch_closes, fetch_daily_closes, prev_close, trading_days
+from market_data import fetch_closes, fetch_daily_closes, prev_close, trading_days
 from similarity import (CANDIDATES, IST, LABELS, NIFTY, OWN_OPEN, SAME_CLOCK, WEIGHTS, Path,
                         nifty_open, rank, session_path)
 
