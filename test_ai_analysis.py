@@ -116,9 +116,13 @@ def test_sdk_sends_expected_request():
 
 def test_chat_prompt():
     text = ai_analysis.chat_prompt("CTX", "Why ASX?")
-    assert text.startswith("<instructions>\n") and ai_analysis.SYSTEM in text
+    assert text.startswith("<instructions>\n") and ai_analysis.system_prompt(ai_analysis.ALL) in text
     assert "<briefing>\nCTX\n</briefing>" in text and text.endswith("Question: Why ASX?")
-    assert ai_analysis.chat_prompt("CTX").endswith("Analyse how the selected index compares with Nifty 50 today.")
+    assert ai_analysis.chat_prompt("CTX").endswith(
+        "Analyse how all the Asian indices compare with Nifty 50 today.")
+    pair = ai_analysis.chat_prompt("CTX", scope=ai_analysis.PAIR)
+    assert ai_analysis.system_prompt(ai_analysis.PAIR) in pair
+    assert pair.endswith("Analyse how the selected index compares with Nifty 50 today.")
 
 
 def test_claude_ai_url():
@@ -126,17 +130,18 @@ def test_claude_ai_url():
     ctx = ai_analysis.build_context(
         day="Tue", mode="own open", window="w", nifty=NIFTY, focus=FOCUS, ranking=RANKING,
         paths={"Nifty 50": [(0, "09:15", -0.34)]})
-    url = ai_analysis.claude_ai_url(ctx, "Why ASX?")
+    url = ai_analysis.claude_ai_url(ctx, "Why ASX?", scope=ai_analysis.PAIR)
     assert url.startswith("https://claude.ai/new?q=")
     text = parse_qs(urlparse(url).query)["q"][0]  # round-trips exactly
-    assert text.startswith(ai_analysis.SHORT_SYSTEM) and ctx in text and text.endswith("Why ASX?")
+    assert text.startswith(ai_analysis.short_system_prompt(ai_analysis.PAIR))
+    assert ctx in text and text.endswith("Why ASX?")
     # A briefing too long for a URL gets its paths, then other-index rows, dropped,
     # but always keeps the selected index.
     many = [{"name": f"Index {i}", "status": "ranked", "score": 10.0} for i in range(300)]
     long_paths = {f"P{i}": [(m, "10:00", 0.1) for m in range(0, 300, 15)] for i in range(10)}
     big = ai_analysis.build_context(day="Tue", mode="m", window="w", nifty=NIFTY, focus=FOCUS,
                                     ranking=many, paths=long_paths)
-    url = ai_analysis.claude_ai_url(big)
+    url = ai_analysis.claude_ai_url(big, scope=ai_analysis.PAIR)
     text = parse_qs(urlparse(url).query)["q"][0]
     assert len(url) <= ai_analysis.URL_LIMIT and "Paths," not in text
     assert "Selected index: Hang Seng" in text and "Index 0 " in text and "Index 299 " not in text
@@ -155,6 +160,38 @@ def test_chart_csv_and_where_it_goes():
     from urllib.parse import parse_qs, urlparse
     text = parse_qs(urlparse(ai_analysis.claude_ai_url("CTX", "Q?", "f.csv")).query)["q"][0]
     assert "I have attached f.csv" in text and text.endswith("Question: Q?")
+
+
+def test_scopes_differ():
+    all_, pair = ai_analysis.system_prompt(ai_analysis.ALL), ai_analysis.system_prompt(ai_analysis.PAIR)
+    assert "as a group" in all_ and "clusters" in all_ and "selected index" not in all_
+    assert "selected index" in pair and "200-350 words" in all_ and "150-250 words" in pair
+    for scope in (ai_analysis.ALL, ai_analysis.PAIR):  # shared rules survive in both
+        assert "not advice" in ai_analysis.system_prompt(scope)
+        assert "not points" in ai_analysis.short_system_prompt(scope)
+    calls = []
+    "".join(ai_analysis.stream_analysis(fake_client(["x"], calls=calls), "C", scope=ai_analysis.PAIR))
+    assert calls[0]["system"] == pair
+
+
+def test_build_all_context():
+    rows = [dict(FOCUS, name="ASX 200", score=38.0), FOCUS,
+            {"name": "KOSPI", "status": "no data"}]
+    text = ai_analysis.build_all_context(day="Tue", mode="own open", window="w", nifty=NIFTY,
+                                         results=rows, paths={"Nifty 50": [(0, "09:15", -0.34)]})
+    assert "Asian indices, best match first" in text
+    assert text.index("- ASX 200 [ranked] score 38") < text.index("- Hang Seng [ranked] score 29")
+    assert "gap +0.43% (+0.77 pp vs Nifty's)" in text and "moves 0.15" in text
+    assert "- KOSPI: no data in this window" in text and "0m@09:15 -0.34%" in text
+    # Too long for a link: paths go first, then the lowest rows; the top rows stay.
+    many = [dict(FOCUS, name=f"Index {i}") for i in range(80)]
+    big = ai_analysis.build_all_context(day="Tue", mode="m", window="w", nifty=NIFTY,
+                                        results=many, paths={"P": [(m, "10:00", 0.1) for m in range(0, 3000, 15)]})
+    from urllib.parse import parse_qs, urlparse
+    url = ai_analysis.claude_ai_url(big)
+    text = parse_qs(urlparse(url).query)["q"][0]
+    assert len(url) <= ai_analysis.URL_LIMIT and "Paths," not in text
+    assert "- Index 0 [" in text and "- Index 79 [" not in text
 
 
 def test_no_credentials_means_no_client():

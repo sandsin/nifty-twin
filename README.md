@@ -46,15 +46,20 @@ Optional: `python test_similarity.py` and `python test_ai_analysis.py` to check 
 
 ## AI analysis
 
-Right under the chart, the **AI analysis** panel analyses **Nifty vs the index selected in the "Compare Nifty with" dropdown** ("Best match (auto)" means the top-ranked index). Pick another index and the panel switches to it. Claude (`claude-opus-5-5`) covers the opening gaps, when the two moved together and when they diverged (with IST times), which score components helped or hurt, how the index stands against the top match, and what makes the read unreliable. You can also type a question, for example "When did Hang Seng split from Nifty?".
+Right under the chart, the **AI analysis** panel has Claude (`claude-opus-5-5`) analyse the session. Choose what to analyse:
 
-- It sends only the numbers on the page for that pair: gaps, % moves, every score component, the other indices' scores for context, and the full chart data for the two lines (every minute) as CSV. Nothing else.
-- With an API key it runs only when you click, never on the auto-refresh. Each click is one request (a few US cents).
+- **Nifty vs all Asian indices** (default): which indices track Nifty most closely and why, opening gaps across the region, clusters that move together (for example the China markets) and whether Nifty sits with one, which diverge most and when (IST times), and what makes the read unreliable. It sends every index's gap, % moves and score components, plus the full chart data for all of them.
+- **Nifty vs the selected index**: follows the **Compare Nifty with** dropdown. It covers the opening gaps, when the two moved together and diverged, which score components helped or hurt, and how the index stands against the top match. It sends that pair's numbers and both lines' chart data, with the other indices' scores for context.
+
+You can also type a question, for example "Which markets are moving with Nifty, and which against it?".
+
+- It only sees the numbers on the page. The chart data is CSV with one row per index per trading minute (`index, minute, ist_time, vs_prev_close_pct, since_open_pct`).
+- With an API key it runs only when you click, never on the auto-refresh. Each click is one request: a few US cents for one index, about 10-25 cents for all indices.
 - It is commentary, not trading advice. It is told not to recommend trades or predict Nifty.
 
 **No API key? Use your Claude.ai plan.** A Claude Pro plan doesn't include API access, so the panel hands the analysis to a Claude.ai chat in three steps:
 
-1. **Download chart data**: a CSV with every point of the two lines on the chart, one row per index per trading minute (`index, minute, ist_time, vs_prev_close_pct, since_open_pct`). A full day is about 750 rows (~25 KB).
+1. **Download chart data**: the CSV for the chosen analysis. A full day is about 4,100 rows (~140 KB) for all indices, or about 750 rows (~25 KB) for one.
 2. **Ask Claude.ai**: opens a new chat with short instructions, this page's numbers and your question filled in (`claude.ai/new?q=...`, capped at 8,000 characters). The prompt tells Claude to use the attached file.
 3. **Attach the file** in that chat and press Enter.
 
