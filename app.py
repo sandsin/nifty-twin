@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import ai_analysis
-from market_data import fetch_closes, fetch_daily_closes, prev_close, trading_days
+from market_data import LiveData, prev_close, trading_days
 from similarity import (CANDIDATES, IST, LABELS, NIFTY, OWN_OPEN, SAME_CLOCK, WEIGHTS, Path,
                         nifty_open, rank, session_path)
 
@@ -29,14 +29,14 @@ EPOCH = pd.Timestamp("2000-01-01")  # elapsed minutes are plotted as clock offse
 st.set_page_config(page_title="Nifty Twin", page_icon="📈", layout="wide")
 
 
-@st.cache_data(ttl=25, show_spinner=False)
-def load(tickers: tuple[str, ...]) -> dict[str, pd.Series]:
-    return fetch_closes(list(tickers))
+@st.cache_resource(show_spinner=False)
+def live_data() -> LiveData:
+    """One shared copy of every index's data for all viewers, refreshed in the background."""
+    return LiveData([NIFTY] + list(CANDIDATES.values()))
 
 
-@st.cache_data(ttl=600, show_spinner=False)
-def load_daily(tickers: tuple[str, ...]) -> dict[str, pd.Series]:
-    return fetch_daily_closes(list(tickers))
+def load() -> tuple[dict[str, pd.Series], dict[str, pd.Series]]:
+    return live_data().get()
 
 
 def fmt_elapsed(minutes: int) -> str:
@@ -75,9 +75,8 @@ with st.sidebar:
     refresh = st.slider("Auto-update every (seconds)", 10, 120, 60, step=5, disabled=not live,
                         help="Yahoo publishes 1-minute bars about once a minute.")
 
-    tickers = tuple([NIFTY] + [CANDIDATES[n] for n in names])
     with st.spinner("Loading 1-minute data…"):
-        closes = load(tickers)
+        closes, _ = load()
     days = trading_days(closes[NIFTY])
 
     if live:
@@ -145,6 +144,54 @@ def chart(nifty: Path, other: Path, other_name: str) -> go.Figure:
     return fig
 
 
+def _level(x: float) -> str:
+    return f"{x:,.2f}" if np.isfinite(x) else "—"
+
+
+def _facts(p: Path) -> dict[str, str]:
+    """One index's numbers for the side-by-side table."""
+    if p.values.empty:
+        return {}
+    v, prev = p.values, has_prev(p)
+    return {
+        "Window (IST)": f"{p.clock()[0]:%H:%M} → {p.clock()[-1]:%H:%M}",
+        "Previous close": _level(p.base) if prev else "—",
+        "Open": _level(p.open_level),
+        "Opening gap": fmt_move(p.gap, p.gap * p.base / 100) if prev else "—",
+        "Latest": _level(p.levels.iloc[-1]),
+        "Since open": fmt_pct(p.since_open.iloc[-1]),
+        "Vs prev close": fmt_pct(v.iloc[-1]) if prev else "—",
+        "High (vs prev close)": fmt_pct(v.max()) if prev else "—",
+        "Low (vs prev close)": fmt_pct(v.min()) if prev else "—",
+    }
+
+
+def side_by_side(nifty: Path, other: Path, other_name: str, score, rank_no) -> pd.DataFrame:
+    """Nifty's numbers with the compared index's in the next column."""
+    a, b = _facts(nifty), _facts(other)
+    rows = [{"": k, "Nifty 50": a.get(k, "—"), other_name: b.get(k, "—")} for k in a or b]
+    if score.status != "no data" and np.isfinite(score.score):
+        where = f"rank {rank_no}" if rank_no else "not ranked"
+        rows.append({"": "Match score", "Nifty 50": "",
+                     other_name: f"{score.score:.0f} / 100 ({where})"})
+    return pd.DataFrame(rows)
+
+
+def minute_table(nifty: Path, other: Path, other_name: str) -> pd.DataFrame:
+    """Both paths minute by minute on the shared elapsed axis, latest first."""
+    def cols(p: Path, name: str) -> pd.DataFrame:
+        return pd.DataFrame({f"{name} (IST)": p.clock().strftime("%H:%M"), name: p.values.to_numpy()},
+                            index=p.values.index)
+    both = cols(nifty, "Nifty 50").join(cols(other, other_name), how="outer").sort_index(ascending=False)
+    diff = both[other_name] - both["Nifty 50"]
+    out = pd.DataFrame({"Minute": [fmt_elapsed(int(m)) for m in both.index]})
+    for name in ("Nifty 50", other_name):
+        out[f"{name} (IST)"] = both[f"{name} (IST)"].fillna("—").to_numpy()
+        out[name] = [fmt_pct(x) for x in both[name]]
+    out["Difference"] = [f"{d:+.2f} pp" if np.isfinite(d) else "—" for d in diff]
+    return out
+
+
 def results_table(results) -> pd.DataFrame:
     rows = []
     for i, r in enumerate(results, start=1):
@@ -170,7 +217,7 @@ def results_table(results) -> pd.DataFrame:
 
 
 def dashboard() -> None:
-    data = load(tickers)
+    data, daily = load()
     nifty = data[NIFTY]
     if nifty.empty:
         st.error("No Nifty data came back from Yahoo. It may be rate-limiting this server; "
@@ -199,7 +246,6 @@ def dashboard() -> None:
         st.info("The window ends before Nifty's 9:15 IST open.")
         return
 
-    daily = load_daily(tickers)
     nifty_prev = prev_close(daily.get(NIFTY, pd.Series(dtype=float)), sel_day)
     prevs = {n: prev_close(daily.get(CANDIDATES[n], pd.Series(dtype=float)), sel_day) for n in names}
     others = {n: data.get(CANDIDATES[n], pd.Series(dtype=float)) for n in names}
@@ -273,6 +319,22 @@ def dashboard() -> None:
     else:
         st.caption(f"{base_note}Lines break where an index was not trading (lunch breaks, "
                    "closed markets). Nothing is forward-filled.")
+
+    # ---------- Twin data next to Nifty's ----------
+    focus = next(r for r in results if r.name == other_name)
+    rank_no = next((i for i, r in enumerate(ranked, start=1) if r.name == other_name), None)
+    st.markdown(f"**Nifty 50 vs {other_name}**")
+    st.dataframe(side_by_side(nifty_path, other_path, other_name, focus, rank_no),
+                 hide_index=True, width="stretch",
+                 column_config={"": st.column_config.TextColumn(pinned=True)})
+    with st.expander(f"Minute by minute: Nifty 50 next to {other_name}"):
+        st.dataframe(minute_table(nifty_path, other_path, other_name), hide_index=True,
+                     width="stretch", height=300)
+        st.caption(("Latest first, lined up by trading time since each index's open. "
+                    if mode == OWN_OPEN else "Latest first, by time since 9:15 IST. ")
+                   + ("Moves are from each index's previous close. " if has_prev(nifty_path)
+                      else "Moves are from the open. ")
+                   + f"Difference is {other_name} minus Nifty, in percentage points.")
 
     # ---------- AI analysis ----------
     st.divider()

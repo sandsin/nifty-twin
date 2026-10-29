@@ -8,10 +8,11 @@ Finds which Asian index's session most resembles Nifty 50's since the 9:15 AM IS
 |---|---|
 | `app.py` | Streamlit dashboard (auto-updating) |
 | `similarity.py` | Alignment to 9:15 IST and scoring logic |
-| `market_data.py` | 1-minute data loader (Yahoo Finance via `yfinance`) |
+| `market_data.py` | 1-minute data loader (Yahoo Finance via `yfinance`), kept fresh in the background |
 | `ai_analysis.py` | AI commentary on the ranking (Claude via the Anthropic API) |
 | `test_similarity.py` | Tests on synthetic data |
 | `test_ai_analysis.py` | Tests for the AI panel (no API calls) |
+| `test_market_data.py` | Tests for the background data refresh (no downloads) |
 | `requirements.txt` | Dependencies (Streamlit 1.50+, Plotly for the chart) |
 
 ## Run locally
@@ -21,7 +22,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Optional: `python test_similarity.py` and `python test_ai_analysis.py` to check the scoring and AI panel (each should print `OK`).
+Optional: `python test_similarity.py`, `python test_ai_analysis.py` and `python test_market_data.py` to check the scoring, AI panel and data refresh (each should print `OK`).
 
 ## How it works
 
@@ -43,6 +44,7 @@ Optional: `python test_similarity.py` and `python test_ai_analysis.py` to check 
    Example: Nifty opens +12 pts and falls 70, and Hang Seng opens +10 and falls 50. They score well above KOSPI opening +3% and then moving exactly like Nifty, because KOSPI's level is far away the whole time. Moves are compared in %, not raw points: 50 points on Nikkei (~40,000) is a smaller move than 50 on Nifty (~25,000).
    If a previous close is unavailable, paths start from the open and the gap component is left out.
 5. Indices with less than the minimum coverage (default 70%) are listed as "partial data" and not ranked.
+6. Under the chart, **Nifty 50 vs [index]** puts the compared index's numbers next to Nifty's: window, previous close, open, opening gap, latest level, since open, vs previous close, high and low, and its match score. **Minute by minute** lists both lines side by side with the difference in percentage points, latest first.
 
 ## AI analysis
 
@@ -90,6 +92,7 @@ Nikkei 225, Hang Seng, Shanghai Composite, Shenzhen Component, KOSPI, Taiwan TAI
 - **Lunch breaks (IST)**: Shanghai and Shenzhen pause 9:00-10:30, Hang Seng 9:30-10:30, Nikkei 8:00-9:00. In own-open mode they are skipped. In same-clock mode they show as gaps, or as partial data early in the window. Any gap or frozen price longer than 15 minutes counts as a break (Yahoo pads Shenzhen's lunch with flat bars).
 - **Early noise**: a few minutes after the open the match is unreliable. The app warns until Nifty has about 15 bars.
 - **Data lag**: free Yahoo data can lag a few minutes. The header shows Nifty's last bar time so you can see it.
+- **Speed**: data for all indices is held in memory and shared by every viewer. Only the first load waits for Yahoo (a few seconds). After that, page updates use the copy in memory while a background thread fetches the latest session every ~20 seconds, and the full 7 days and the daily closes every 15 minutes.
 - **Not trading advice**: similarity of intraday paths does not predict what Nifty does next.
 
 ## Deploy (Streamlit Community Cloud, free)
