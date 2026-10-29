@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
+import os
+import sys
+import time as clock
 from datetime import datetime, time
 
 import anthropic
@@ -10,8 +14,25 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-import ai_analysis
-from market_data import LiveData, prev_close, trading_days
+
+def _import_fresh(name: str) -> None:
+    """Import one of this app's modules, reloading it if its file changed since it was loaded.
+
+    Streamlit Cloud pulls a push into the running server and reruns app.py, but keeps the
+    modules it already imported, so new app.py code could meet an old copy of them.
+    """
+    mod = sys.modules.get(name)
+    if mod is not None and os.path.getmtime(mod.__file__) <= getattr(mod, "_loaded_at", 0):
+        return
+    mod = importlib.reload(mod) if mod is not None else importlib.import_module(name)
+    mod._loaded_at = clock.time()
+
+
+for _name in ("similarity", "market_data", "ai_analysis"):  # dependencies first
+    _import_fresh(_name)
+
+import ai_analysis  # noqa: E402  (after the freshness check above)
+from market_data import LiveData, prev_close, trading_days  # noqa: E402
 from similarity import (CANDIDATES, IST, LABELS, NIFTY, OWN_OPEN, SAME_CLOCK, WEIGHTS, Path,
                         nifty_open, rank, session_path)
 
